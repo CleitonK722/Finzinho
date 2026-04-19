@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 
+const SENHA_CORRETA = "#Kempner123";
+const LOGIN_KEY = "finzinho-logado";
+
 const CATEGORIES = {
   alimentacao: { label: "Alimentação", emoji: "🍽️", color: "#f97316", keywords: ["mercado","supermercado","restaurante","lanche","almoço","jantar","café","padaria","pizza","ifood","rappi","delivery","feira","açougue","peixaria","comida","refeição","hamburguer","sushi","churrasco"] },
   transporte: { label: "Transporte", emoji: "🚗", color: "#3b82f6", keywords: ["uber","99","taxi","ônibus","metrô","combustível","gasolina","etanol","estacionamento","pedágio","moto","bicicleta","transporte","passagem","bilhete"] },
@@ -16,11 +19,9 @@ const STORAGE_KEY = "finzinho-gastos-v2";
 function formatCurrency(val) {
   return Number(val).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
-
 function formatDate(iso) {
   return new Date(iso).toLocaleDateString("pt-BR");
 }
-
 function detectCategory(text) {
   const lower = text.toLowerCase();
   for (const [key, cat] of Object.entries(CATEGORIES)) {
@@ -29,7 +30,6 @@ function detectCategory(text) {
   }
   return "outros";
 }
-
 function parseGasto(text) {
   const valorMatch = text.match(/r?\$?\s?(\d+(?:[.,]\d{1,2})?)/i);
   if (!valorMatch) return null;
@@ -43,7 +43,125 @@ function parseGasto(text) {
   return { valor, descricao: descricao.charAt(0).toUpperCase() + descricao.slice(1), categoria };
 }
 
+function LoginScreen({ onLogin }) {
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState(false);
+  const [mostrar, setMostrar] = useState(false);
+
+  const handleLogin = () => {
+    if (senha === SENHA_CORRETA) {
+      localStorage.setItem(LOGIN_KEY, "true");
+      onLogin();
+    } else {
+      setErro(true);
+      setSenha("");
+      setTimeout(() => setErro(false), 2000);
+    }
+  };
+
+  return (
+    <div style={{
+      fontFamily: "'DM Sans', sans-serif",
+      background: "#0f0f13",
+      minHeight: "100vh",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 24,
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+      <div style={{
+        width: "100%",
+        maxWidth: 360,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 24,
+      }}>
+        {/* Logo */}
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 56, marginBottom: 8 }}>🐟</div>
+          <div style={{ fontWeight: 600, fontSize: 24, color: "#e8e8f0", letterSpacing: "-0.5px" }}>Finzinho</div>
+          <div style={{ fontSize: 13, color: "#444", fontFamily: "'DM Mono'", marginTop: 4 }}>controle de gastos</div>
+        </div>
+
+        {/* Card de login */}
+        <div style={{
+          width: "100%",
+          background: "#1a1a24",
+          border: `1px solid ${erro ? "#4a1a1a" : "#2a2a38"}`,
+          borderRadius: 16,
+          padding: 24,
+          display: "flex",
+          flexDirection: "column",
+          gap: 16,
+          transition: "border-color 0.3s",
+        }}>
+          <div>
+            <label style={{ fontSize: 12, color: "#666", display: "block", marginBottom: 8, fontFamily: "'DM Mono'" }}>SENHA</label>
+            <div style={{ position: "relative" }}>
+              <input
+                type={mostrar ? "text" : "password"}
+                value={senha}
+                onChange={e => setSenha(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleLogin()}
+                placeholder="Digite sua senha"
+                autoFocus
+                style={{
+                  width: "100%",
+                  background: "#0f0f13",
+                  border: `1px solid ${erro ? "#7f2a2a" : "#2a2a38"}`,
+                  borderRadius: 10,
+                  padding: "11px 44px 11px 14px",
+                  color: erro ? "#f87171" : "#e8e8f0",
+                  fontSize: 15,
+                  fontFamily: "'DM Mono'",
+                  outline: "none",
+                  boxSizing: "border-box",
+                  transition: "border-color 0.3s",
+                  letterSpacing: mostrar ? "normal" : "2px",
+                }}
+              />
+              <button
+                onClick={() => setMostrar(m => !m)}
+                style={{
+                  position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#444",
+                }}
+              >{mostrar ? "🙈" : "👁️"}</button>
+            </div>
+            {erro && (
+              <div style={{ fontSize: 12, color: "#f87171", marginTop: 6 }}>Senha incorreta. Tente novamente.</div>
+            )}
+          </div>
+
+          <button
+            onClick={handleLogin}
+            disabled={!senha}
+            style={{
+              background: senha ? "#a0e9c0" : "#1e1e2e",
+              color: senha ? "#0f1f0f" : "#333",
+              border: "none",
+              borderRadius: 10,
+              padding: "12px",
+              fontWeight: 600,
+              fontSize: 15,
+              cursor: senha ? "pointer" : "default",
+              fontFamily: "'DM Sans'",
+              transition: "all 0.2s",
+            }}
+          >Entrar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  const [logado, setLogado] = useState(false);
+  const [checando, setChecando] = useState(true);
   const [gastos, setGastos] = useState([]);
   const [view, setView] = useState("chat");
   const [messages, setMessages] = useState([
@@ -56,8 +174,15 @@ export default function App() {
   const messagesEndRef = useRef(null);
 
   useEffect(() => {
-    try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) setGastos(JSON.parse(saved)); } catch {}
+    const salvo = localStorage.getItem(LOGIN_KEY);
+    if (salvo === "true") setLogado(true);
+    setChecando(false);
   }, []);
+
+  useEffect(() => {
+    if (!logado) return;
+    try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) setGastos(JSON.parse(saved)); } catch {}
+  }, [logado]);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(gastos)); } catch {}
@@ -114,6 +239,9 @@ export default function App() {
 
   const inp = { flex: 1, background: "#1a1a24", border: "1px solid #2a2a38", borderRadius: 12, padding: "10px 14px", color: "#e8e8f0", fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
 
+  if (checando) return null;
+  if (!logado) return <LoginScreen onLogin={() => setLogado(true)} />;
+
   return (
     <div style={{ fontFamily: "'DM Sans', sans-serif", background: "#0f0f13", minHeight: "100vh", color: "#e8e8f0", display: "flex", flexDirection: "column" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -126,9 +254,15 @@ export default function App() {
             <div style={{ fontSize: 11, color: "#555", fontFamily: "'DM Mono'" }}>controle de gastos</div>
           </div>
         </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 10, color: "#444", fontFamily: "'DM Mono'", marginBottom: 2 }}>TOTAL</div>
-          <div style={{ fontFamily: "'DM Mono'", fontSize: 15, color: "#a0e9c0", fontWeight: 500 }}>{formatCurrency(totalGeral)}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 10, color: "#444", fontFamily: "'DM Mono'", marginBottom: 2 }}>TOTAL</div>
+            <div style={{ fontFamily: "'DM Mono'", fontSize: 15, color: "#a0e9c0", fontWeight: 500 }}>{formatCurrency(totalGeral)}</div>
+          </div>
+          <button
+            onClick={() => { localStorage.removeItem(LOGIN_KEY); setLogado(false); }}
+            style={{ background: "none", border: "1px solid #2a2a38", borderRadius: 8, padding: "5px 10px", color: "#555", fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans'" }}
+          >Sair</button>
         </div>
       </div>
 
@@ -196,7 +330,7 @@ export default function App() {
           </div>
 
           {gastosFiltrados.length === 0 ? (
-            <div style={{ textAlign: "center", padding: 40, color: "#333", fontSize: 14 }}>Nenhum gasto ainda 🐟<br /><span style={{ fontSize: 12, color: "#2a2a2a" }}>Use o chat ou o formulário!</span></div>
+            <div style={{ textAlign: "center", padding: 40, color: "#333", fontSize: 14 }}>Nenhum gasto ainda 🐟</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {gastosFiltrados.map(g => {
