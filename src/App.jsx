@@ -3,7 +3,6 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, updateDoc, query, orderBy, where } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const firebaseConfig = {
   apiKey: "AIzaSyADHYjRMDYsXT2gXkNwR3VzEpc8oOr3o04",
@@ -13,9 +12,6 @@ const firebaseConfig = {
   messagingSenderId: "542269306227",
   appId: "1:542269306227:web:56f00e4e8ef107a15b4106",
 };
-
-const GEMINI_KEY = "AIzaSyC7jt68Etol0qrzmEu3atG4Mh2FbWmYzxA";
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -54,11 +50,14 @@ function detectCategory(text) {
 }
 
 function parseGasto(text) {
-  const valorMatch = text.match(/r?\$?\s?(\d+(?:[.,]\d{1,2})?)/i);
+  const valorMatch = text.match(/(\d+(?:[.,]\d{1,2})?)/);
   if (!valorMatch) return null;
   const valor = parseFloat(valorMatch[1].replace(",", "."));
   if (isNaN(valor) || valor <= 0) return null;
-  const descricao = text.replace(/r?\$?\s?\d+(?:[.,]\d{1,2})?/i, "").replace(/gastei|comprei|paguei|no|na|em|de|com|reais|real/gi, " ").replace(/\s+/g, " ").trim() || "Gasto";
+  const descricao = text
+    .replace(/r?\$?\s?\d+(?:[.,]\d{1,2})?/gi, "")
+    .replace(/\b(gastei|comprei|paguei|reais|real|brl|no|na|em|de|com|do|da)\b/gi, " ")
+    .replace(/\s+/g, " ").trim() || "Gasto";
   return { valor, descricao: descricao.charAt(0).toUpperCase() + descricao.slice(1), categoria: detectCategory(text) };
 }
 
@@ -73,11 +72,20 @@ function exportarExcel(gastos) {
   URL.revokeObjectURL(url);
 }
 
-async function askGemini(prompt, gastos, totalMes, config) {
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-  const resumo = `Dados: ${gastos.length} gastos. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta: ${formatCurrency(config.meta)}.` : ""} Últimos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
-  const result = await model.generateContent(`Você é o Finzinho 🐟, assistente de controle de gastos. Responda em português, de forma curta e amigável. ${resumo}\n\nPergunta: ${prompt}`);
-  return result.response.text();
+async function askAI(prompt, gastos, totalMes, config) {
+  const resumo = `Tenho ${gastos.length} gastos registrados. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta mensal: ${formatCurrency(config.meta)}.` : ""} Últimos gastos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": "sk-ant-api03-placeholder", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 300,
+      system: "Você é o Finzinho 🐟, um assistente simpático de controle de gastos pessoais. Responda em português brasileiro, de forma curta, direta e amigável. Use emojis com moderação. Máximo 3 frases.",
+      messages: [{ role: "user", content: `${resumo}\n\nPergunta: ${prompt}` }]
+    })
+  });
+  const data = await res.json();
+  return data.content?.[0]?.text || "Não consegui responder agora 😅";
 }
 
 function LoginScreen({ dark }) {
@@ -238,7 +246,7 @@ export default function App() {
     setAiLoading(true);
     setMessages(prev => [...prev, { role: "bot", text: "...", loading: true }]);
     try {
-      const resposta = await askGemini(text, gastos, totalMes, config);
+      const resposta = await askAI(text, gastos, totalMes, config);
       setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: resposta }]);
     } catch { setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: "Ops, tive um problema! Tente de novo 😅" }]); }
     setAiLoading(false);
@@ -370,7 +378,7 @@ export default function App() {
               {[["Gastos", gastos.length, "#a0e9c0"], ["Este mês", formatCurrency(totalMes), corMeta], ["Total", formatCurrency(totalGeral), "#a0e9c0"]].map(([l, v, c]) => (
                 <div key={l} style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
                   <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>{l}</div>
-                  <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: c }}>{v}</div>
+                  <div style={{ fontFamily: "'DM Mono'", fontSize: 12, color: c }}>{v}</div>
                 </div>
               ))}
             </div>
