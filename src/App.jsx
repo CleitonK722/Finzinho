@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, updateDoc, query, orderBy, where } from "firebase/firestore";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyADHYjRMDYsXT2gXkNwR3VzEpc8oOr3o04",
@@ -12,22 +13,25 @@ const firebaseConfig = {
   appId: "1:542269306227:web:56f00e4e8ef107a15b4106",
 };
 
+const GEMINI_KEY = "AIzaSyDttpVWDnrB2lTVbgsKdS0fwst2FwQ7i70";
+
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
-const provider = new GoogleAuthProvider();
+const storage = getStorage(app);
+const googleProvider = new GoogleAuthProvider();
 
 const CONFIG_KEY = "finzinho-config-v3";
 const FIXOS_KEY = "finzinho-fixos-v1";
 
 const CATEGORIES = {
-  alimentacao: { label: "Alimentação", emoji: "🍽️", color: "#f97316", keywords: ["mercado","supermercado","restaurante","lanche","almoço","jantar","café","padaria","pizza","ifood","rappi","delivery","feira","açougue","peixaria","comida","refeição","hamburguer","sushi","churrasco"] },
-  transporte: { label: "Transporte", emoji: "🚗", color: "#3b82f6", keywords: ["uber","99","taxi","ônibus","metrô","combustível","gasolina","etanol","estacionamento","pedágio","moto","bicicleta","transporte","passagem","bilhete"] },
-  saude: { label: "Saúde", emoji: "💊", color: "#10b981", keywords: ["farmácia","remédio","médico","consulta","dentista","hospital","exame","plano de saúde","academia","psicólogo","fisioterapia","saúde","clínica"] },
-  lazer: { label: "Lazer", emoji: "🎬", color: "#a855f7", keywords: ["cinema","show","teatro","netflix","spotify","youtube","jogo","viagem","hotel","passeio","diversão","bar","balada","festa","ingresso"] },
-  moradia: { label: "Moradia", emoji: "🏠", color: "#f59e0b", keywords: ["aluguel","condomínio","luz","energia","água","internet","gás","conta","iptu","seguro","manutenção","reforma","móvel","eletrodoméstico"] },
-  educacao: { label: "Educação", emoji: "📚", color: "#06b6d4", keywords: ["escola","faculdade","curso","livro","material","mensalidade","aula","treinamento","workshop","certificado","educação"] },
-  roupas: { label: "Roupas", emoji: "👕", color: "#ec4899", keywords: ["roupa","sapato","tênis","camisa","calça","vestido","blusa","jaqueta","moda","loja","shein","renner","c&a","riachuelo"] },
+  alimentacao: { label: "Alimentação", emoji: "🍽️", color: "#f97316", keywords: ["mercado","supermercado","restaurante","lanche","almoço","jantar","café","padaria","pizza","ifood","rappi","delivery","feira","comida","refeição","hamburguer","sushi"] },
+  transporte: { label: "Transporte", emoji: "🚗", color: "#3b82f6", keywords: ["uber","99","taxi","ônibus","metrô","combustível","gasolina","etanol","estacionamento","pedágio","moto","bicicleta","passagem"] },
+  saude: { label: "Saúde", emoji: "💊", color: "#10b981", keywords: ["farmácia","remédio","médico","consulta","dentista","hospital","exame","academia","psicólogo","fisioterapia","clínica"] },
+  lazer: { label: "Lazer", emoji: "🎬", color: "#a855f7", keywords: ["cinema","show","teatro","netflix","spotify","youtube","jogo","viagem","hotel","passeio","bar","balada","festa","ingresso"] },
+  moradia: { label: "Moradia", emoji: "🏠", color: "#f59e0b", keywords: ["aluguel","condomínio","luz","energia","água","internet","gás","conta","iptu","seguro","manutenção","reforma","móvel"] },
+  educacao: { label: "Educação", emoji: "📚", color: "#06b6d4", keywords: ["escola","faculdade","curso","livro","material","mensalidade","aula","treinamento","workshop","certificado"] },
+  roupas: { label: "Roupas", emoji: "👕", color: "#ec4899", keywords: ["roupa","sapato","tênis","camisa","calça","vestido","blusa","jaqueta","moda","loja","shein","renner"] },
   outros: { label: "Outros", emoji: "📦", color: "#6b7280", keywords: [] },
 };
 
@@ -67,40 +71,111 @@ function exportarExcel(gastos) {
   URL.revokeObjectURL(url);
 }
 
+async function askGemini(prompt, gastos, totalMes, config) {
+  const resumo = `Dados do usuário: ${gastos.length} gastos registrados. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta mensal: ${formatCurrency(config.meta)}.` : ""} Últimos gastos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: `Você é o Finzinho, um assistente simpático de controle de gastos pessoais. Responda em português brasileiro, de forma curta e amigável. Use emojis com moderação. ${resumo}\n\nPergunta do usuário: ${prompt}` }] }]
+    })
+  });
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "Desculpe, não consegui responder agora 😅";
+}
+
 // Tela de Login
 function LoginScreen({ dark }) {
+  const [modo, setModo] = useState("opcoes"); // opcoes | email-login | email-cadastro
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [nome, setNome] = useState("");
   const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
+
   const bg = dark ? "#0f0f13" : "#f5f5f0";
   const card = dark ? "#1a1a24" : "#ffffff";
   const border = dark ? "#2a2a38" : "#e0e0e0";
   const text = dark ? "#e8e8f0" : "#1a1a24";
+  const muted = dark ? "#666" : "#999";
 
   const handleGoogle = async () => {
-    setLoading(true);
-    try { await signInWithPopup(auth, provider); } catch (e) { console.error(e); setLoading(false); }
+    setLoading(true); setErro("");
+    try { await signInWithPopup(auth, googleProvider); } catch (e) { setErro("Erro ao entrar com Google"); setLoading(false); }
   };
+
+  const handleEmailLogin = async () => {
+    setLoading(true); setErro("");
+    try { await signInWithEmailAndPassword(auth, email, senha); } catch (e) { setErro("Email ou senha incorretos"); setLoading(false); }
+  };
+
+  const handleEmailCadastro = async () => {
+    if (!nome.trim()) { setErro("Digite seu nome"); return; }
+    setLoading(true); setErro("");
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, senha);
+      await updateProfile(cred.user, { displayName: nome });
+    } catch (e) {
+      if (e.code === "auth/email-already-in-use") setErro("Email já cadastrado");
+      else if (e.code === "auth/weak-password") setErro("Senha deve ter pelo menos 6 caracteres");
+      else setErro("Erro ao criar conta");
+      setLoading(false);
+    }
+  };
+
+  const inp = { background: dark ? "#0f0f13" : "#f5f5f0", border: `1px solid ${border}`, borderRadius: 10, padding: "11px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
 
   return (
     <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
-      <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", alignItems: "center", gap: 24 }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 64, marginBottom: 12 }}>🐟</div>
-          <div style={{ fontWeight: 600, fontSize: 26, color: text, letterSpacing: "-0.5px" }}>Finzinho</div>
-          <div style={{ fontSize: 13, color: dark ? "#444" : "#999", fontFamily: "'DM Mono'", marginTop: 6 }}>controle de gastos pessoal</div>
+      <div style={{ width: "100%", maxWidth: 360 }}>
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{ fontSize: 56, marginBottom: 10 }}>🐟</div>
+          <div style={{ fontWeight: 600, fontSize: 24, color: text }}>Finzinho</div>
+          <div style={{ fontSize: 12, color: muted, fontFamily: "'DM Mono'", marginTop: 4 }}>controle de gastos pessoal</div>
         </div>
-        <div style={{ width: "100%", background: card, border: `1px solid ${border}`, borderRadius: 20, padding: 28, display: "flex", flexDirection: "column", gap: 16, textAlign: "center" }}>
-          <div style={{ fontSize: 14, color: dark ? "#888" : "#666", lineHeight: 1.6 }}>Faça login com sua conta Google para acessar seus gastos de qualquer dispositivo</div>
-          <button onClick={handleGoogle} disabled={loading} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: loading ? (dark ? "#1e1e2e" : "#eee") : "#ffffff", border: "1px solid #e0e0e0", borderRadius: 12, padding: "13px 20px", fontWeight: 600, fontSize: 15, cursor: loading ? "default" : "pointer", fontFamily: "'DM Sans'", color: "#333", boxShadow: "0 2px 8px rgba(0,0,0,0.1)", transition: "all 0.2s" }}>
-            {loading ? "Entrando..." : (
-              <>
+
+        <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 20, padding: 24, display: "flex", flexDirection: "column", gap: 12 }}>
+          {modo === "opcoes" && (
+            <>
+              <button onClick={handleGoogle} disabled={loading} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", border: "1px solid #e0e0e0", borderRadius: 12, padding: "13px", fontWeight: 600, fontSize: 15, cursor: "pointer", color: "#333", boxShadow: "0 2px 6px rgba(0,0,0,0.08)" }}>
                 <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                Entrar com Google
-              </>
-            )}
-          </button>
-          <div style={{ fontSize: 11, color: dark ? "#333" : "#bbb" }}>Seus dados ficam salvos na nuvem ☁️</div>
+                {loading ? "Entrando..." : "Entrar com Google"}
+              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1, height: 1, background: border }} />
+                <span style={{ fontSize: 12, color: muted }}>ou</span>
+                <div style={{ flex: 1, height: 1, background: border }} />
+              </div>
+              <button onClick={() => setModo("email-login")} style={{ padding: "12px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📧 Entrar com email</button>
+              <button onClick={() => setModo("email-cadastro")} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>✨ Criar conta</button>
+            </>
+          )}
+
+          {modo === "email-login" && (
+            <>
+              <div style={{ fontSize: 15, fontWeight: 600, color: text, marginBottom: 4 }}>Entrar com email</div>
+              <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
+              <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha" type="password" onKeyDown={e => e.key === "Enter" && handleEmailLogin()} style={inp} />
+              {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
+              <button onClick={handleEmailLogin} disabled={loading || !email || !senha} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha ? 0.5 : 1 }}>{loading ? "Entrando..." : "Entrar"}</button>
+              <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
+            </>
+          )}
+
+          {modo === "email-cadastro" && (
+            <>
+              <div style={{ fontSize: 15, fontWeight: 600, color: text, marginBottom: 4 }}>Criar conta</div>
+              <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Seu nome" style={inp} />
+              <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
+              <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha (mín. 6 caracteres)" type="password" style={inp} />
+              {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
+              <button onClick={handleEmailCadastro} disabled={loading || !email || !senha || !nome} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha || !nome ? 0.5 : 1 }}>{loading ? "Criando..." : "Criar conta"}</button>
+              <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
+            </>
+          )}
         </div>
+        <div style={{ textAlign: "center", marginTop: 16, fontSize: 11, color: muted }}>Seus dados ficam salvos na nuvem ☁️</div>
       </div>
     </div>
   );
@@ -127,6 +202,12 @@ export default function App() {
   const [editando, setEditando] = useState(null);
   const [metaInput, setMetaInput] = useState("");
   const [subView, setSubView] = useState("lista");
+  const [aiLoading, setAiLoading] = useState(false);
+  // Perfil
+  const [editandoPerfil, setEditandoPerfil] = useState(false);
+  const [novoNome, setNovoNome] = useState("");
+  const [uploadingFoto, setUploadingFoto] = useState(false);
+  const fotoInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   const bg = dark ? "#0f0f13" : "#f5f5f0";
@@ -136,10 +217,7 @@ export default function App() {
   const muted = dark ? "#555" : "#999";
   const subtle = dark ? "#444" : "#bbb";
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, u => { setUser(u); setChecando(false); });
-    return unsub;
-  }, []);
+  useEffect(() => { const unsub = onAuthStateChanged(auth, u => { setUser(u); setChecando(false); if (u) setNovoNome(u.displayName || ""); }); return unsub; }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -186,6 +264,27 @@ export default function App() {
     setEditando(null);
   };
 
+  const salvarPerfil = async () => {
+    if (!novoNome.trim()) return;
+    await updateProfile(auth.currentUser, { displayName: novoNome });
+    setUser({ ...user, displayName: novoNome });
+    setEditandoPerfil(false);
+  };
+
+  const handleFotoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadingFoto(true);
+    try {
+      const storageRef = ref(storage, `fotos/${user.uid}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      await updateProfile(auth.currentUser, { photoURL: url });
+      setUser({ ...user, photoURL: url });
+    } catch (e) { console.error(e); }
+    setUploadingFoto(false);
+  };
+
   const toggleSelecionado = (id) => setSelecionados(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
 
   const aplicarFixosDoMes = async () => {
@@ -198,9 +297,10 @@ export default function App() {
 
   const handleSend = async (overrideInput) => {
     const text = (overrideInput !== undefined ? overrideInput : input).trim();
-    if (!text) return;
+    if (!text || aiLoading) return;
     setInput("");
     setMessages(prev => [...prev, { role: "user", text }]);
+
     if (pendente) {
       const lower = text.toLowerCase();
       if (["sim","s","yes","confirma","ok","pode","isso"].some(w => lower.includes(w))) {
@@ -211,11 +311,26 @@ export default function App() {
       } else { setMessages(prev => [...prev, { role: "bot", text: "Responde sim ou não 👆" }]); }
       return;
     }
+
+    // Tenta detectar gasto primeiro
     const resultado = parseGasto(text);
-    if (!resultado) { setMessages(prev => [...prev, { role: "bot", text: "Não consegui identificar o valor 🤔\nEx: 'mercado 50'" }]); return; }
-    const cat = CATEGORIES[resultado.categoria];
-    setPendente(resultado);
-    setMessages(prev => [...prev, { role: "bot", text: `Confirma?\n\n${cat.emoji} ${resultado.descricao}\n💰 ${formatCurrency(resultado.valor)}\n📂 ${cat.label}`, confirmando: true }]);
+    if (resultado && text.match(/\d/)) {
+      const cat = CATEGORIES[resultado.categoria];
+      setPendente(resultado);
+      setMessages(prev => [...prev, { role: "bot", text: `Confirma?\n\n${cat.emoji} ${resultado.descricao}\n💰 ${formatCurrency(resultado.valor)}\n📂 ${cat.label}`, confirmando: true }]);
+      return;
+    }
+
+    // Usa IA para outras perguntas
+    setAiLoading(true);
+    setMessages(prev => [...prev, { role: "bot", text: "...", loading: true }]);
+    try {
+      const resposta = await askGemini(text, gastos, totalMes, config);
+      setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: resposta }]);
+    } catch {
+      setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: "Ops, tive um problema! Tente de novo 😅" }]);
+    }
+    setAiLoading(false);
   };
 
   const handleFormSubmit = async () => {
@@ -236,44 +351,28 @@ export default function App() {
   const totalGeral = gastos.reduce((s, g) => s + g.valor, 0);
   const pctMeta = config.meta > 0 ? Math.min((totalMes / config.meta) * 100, 100) : 0;
   const corMeta = pctMeta > 90 ? "#f87171" : pctMeta > 70 ? "#f59e0b" : "#a0e9c0";
-
   const porCategoria = Object.entries(CATEGORIES).map(([key, cat]) => ({ key, ...cat, total: gastos.filter(g => g.categoria === key).reduce((s, g) => s + g.valor, 0) })).filter(c => c.total > 0).sort((a, b) => b.total - a.total);
-
-  // Comparativo por mês
-  const porMes = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(); d.setMonth(d.getMonth() - (5 - i));
-    const mes = d.getMonth(); const ano = d.getFullYear();
-    const total = gastos.filter(g => { const gd = new Date(g.data); return gd.getMonth() === mes && gd.getFullYear() === ano; }).reduce((s, g) => s + g.valor, 0);
-    return { label: MESES[mes], total, mes, ano };
-  });
+  const porMes = Array.from({ length: 6 }, (_, i) => { const d = new Date(); d.setMonth(d.getMonth() - (5 - i)); const mes = d.getMonth(); const ano = d.getFullYear(); return { label: MESES[mes], total: gastos.filter(g => { const gd = new Date(g.data); return gd.getMonth() === mes && gd.getFullYear() === ano; }).reduce((s, g) => s + g.valor, 0) }; });
   const maxMes = Math.max(...porMes.map(m => m.total), 1);
-
-  const gastosBuscados = gastos.filter(g => {
-    const matchBusca = !busca || g.descricao.toLowerCase().includes(busca.toLowerCase());
-    const matchCat = filterCat === "todas" || g.categoria === filterCat;
-    return matchBusca && matchCat;
-  });
-
+  const gastosBuscados = gastos.filter(g => (!busca || g.descricao.toLowerCase().includes(busca.toLowerCase())) && (filterCat === "todas" || g.categoria === filterCat));
   const maiorGasto = gastos.length > 0 ? gastos.reduce((a, b) => a.valor > b.valor ? a : b) : null;
   const catMaisGasta = porCategoria.length > 0 ? porCategoria[0] : null;
 
   const inp = { background: card, border: `1px solid ${border}`, borderRadius: 10, padding: "10px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
 
-  if (checando) return <div style={{ background: "#0f0f13", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🐟</div>;
+  if (checando) return <div style={{ background: "#0f0f13", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 40 }}>🐟</div>;
   if (!user) return <LoginScreen dark={dark} />;
 
   return (
-    <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", color: text, display: "flex", flexDirection: "column", transition: "background 0.3s" }}>
+    <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", color: text, display: "flex", flexDirection: "column" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+      <input type="file" accept="image/*" ref={fotoInputRef} style={{ display: "none" }} onChange={handleFotoUpload} />
 
       {/* Header */}
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: bg, position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {user.photoURL && <img src={user.photoURL} style={{ width: 28, height: 28, borderRadius: "50%", border: `1px solid ${border}` }} />}
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>🐟 Finzinho</div>
-            <div style={{ fontSize: 10, color: muted }}>{user.displayName?.split(" ")[0]}</div>
-          </div>
+          <span style={{ fontSize: 18 }}>🐟</span>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>Finzinho</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ textAlign: "right" }}>
@@ -281,7 +380,9 @@ export default function App() {
             <div style={{ fontFamily: "'DM Mono'", fontSize: 14, color: corMeta, fontWeight: 500 }}>{formatCurrency(totalMes)}</div>
           </div>
           <button onClick={() => setDark(d => !d)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", fontSize: 13, cursor: "pointer" }}>{dark ? "☀️" : "🌙"}</button>
-          <button onClick={() => signOut(auth)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", color: muted, fontSize: 11, cursor: "pointer" }}>Sair</button>
+          <div onClick={() => setView("perfil")} style={{ cursor: "pointer" }}>
+            {user.photoURL ? <img src={user.photoURL} style={{ width: 32, height: 32, borderRadius: "50%", border: `2px solid ${view === "perfil" ? "#a0e9c0" : border}` }} /> : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#a0e9c022", border: `2px solid ${view === "perfil" ? "#a0e9c0" : border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>👤</div>}
+          </div>
         </div>
       </div>
 
@@ -290,7 +391,7 @@ export default function App() {
           <div style={{ height: 3, background: dark ? "#1e1e2e" : "#eee", borderRadius: 2, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${pctMeta}%`, background: corMeta, borderRadius: 2, transition: "width 0.5s" }} />
           </div>
-          <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{pctMeta.toFixed(0)}% do limite · {formatCurrency(config.meta - totalMes > 0 ? config.meta - totalMes : 0)} restantes</div>
+          <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{pctMeta.toFixed(0)}% do limite · restam {formatCurrency(Math.max(config.meta - totalMes, 0))}</div>
         </div>
       )}
 
@@ -300,30 +401,30 @@ export default function App() {
         ))}
       </div>
 
-      {/* CHAT */}
+      {/* CHAT com IA */}
       {view === "chat" && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 120px)" }}>
           {messages.length === 0 ? (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", gap: 12 }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", gap: 10 }}>
               <div style={{ fontSize: 44 }}>🐟</div>
-              <div style={{ fontSize: 17, fontWeight: 600 }}>Oi, {user.displayName?.split(" ")[0]}!</div>
-              <div style={{ fontSize: 13, color: muted }}>Me diz o que você gastou 💰</div>
+              <div style={{ fontSize: 17, fontWeight: 600 }}>Oi, {user.displayName?.split(" ")[0] || "você"}!</div>
+              <div style={{ fontSize: 13, color: muted, lineHeight: 1.6 }}>Me diz o que gastou ou me faça<br />uma pergunta sobre seus gastos 🤖</div>
               <div style={{ padding: "8px 16px", background: card, border: `1px solid ${border}`, borderRadius: 20, fontSize: 13, color: muted, fontFamily: "'DM Mono'" }}>
                 este mês: <span style={{ color: corMeta }}>{formatCurrency(totalMes)}</span>
               </div>
               {catMaisGasta && <div style={{ fontSize: 12, color: subtle }}>{catMaisGasta.emoji} Mais gasto em {catMaisGasta.label}</div>}
-              {config.meta > 0 && pctMeta > 70 && (
-                <div style={{ padding: "8px 14px", background: dark ? "#2a1a0a" : "#fff8f0", border: `1px solid ${corMeta}44`, borderRadius: 12, fontSize: 12, color: corMeta }}>
-                  {pctMeta > 90 ? "⚠️ Quase no limite!" : "📊 Mais da metade do limite usado"}
-                </div>
-              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", marginTop: 4 }}>
+                {["Como estão meus gastos?","Onde gasto mais?","Dica para economizar"].map(s => (
+                  <button key={s} onClick={() => handleSend(s)} style={{ padding: "6px 12px", borderRadius: 16, border: `1px solid ${border}`, background: card, color: muted, fontSize: 12, cursor: "pointer" }}>{s}</button>
+                ))}
+              </div>
             </div>
           ) : (
             <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
               {messages.map((msg, i) => (
                 <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
-                  <div style={{ maxWidth: "82%", background: msg.role === "user" ? (dark ? "#1e3a5f" : "#e8f0ff") : msg.confirmando ? (dark ? "#1a2a1a" : "#f0fff4") : card, border: `1px solid ${msg.role === "user" ? (dark ? "#2a4a7f" : "#c0d0ff") : msg.confirmando ? (dark ? "#2a4a2a" : "#b0e0c0") : border}`, borderRadius: msg.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 14px", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-line", color: text }}>
-                    {msg.text}
+                  <div style={{ maxWidth: "82%", background: msg.role === "user" ? (dark ? "#1e3a5f" : "#e8f0ff") : msg.confirmando ? (dark ? "#1a2a1a" : "#f0fff4") : card, border: `1px solid ${msg.role === "user" ? (dark ? "#2a4a7f" : "#c0d0ff") : msg.confirmando ? (dark ? "#2a4a2a" : "#b0e0c0") : border}`, borderRadius: msg.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 14px", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-line", color: msg.loading ? muted : text }}>
+                    {msg.loading ? "✨ Pensando..." : msg.text}
                     {msg.gasto && (
                       <div style={{ marginTop: 8, padding: "6px 10px", background: dark ? "#0f1f0f" : "#f0fff4", border: `1px solid ${dark ? "#1a3a1a" : "#b0e0c0"}`, borderRadius: 8, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
                         <span>{CATEGORIES[msg.gasto.categoria]?.emoji}</span>
@@ -345,10 +446,64 @@ export default function App() {
             </div>
           )}
           <div style={{ padding: "10px 16px 6px", borderTop: `1px solid ${border}`, display: "flex", gap: 8 }}>
-            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSend()} placeholder={pendente ? "sim ou não..." : "Ex: " + EXEMPLOS[exemploIdx]} style={{ ...inp, flex: 1 }} />
-            <button onClick={() => handleSend()} disabled={!input.trim()} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !input.trim() ? 0.4 : 1 }}>Enviar</button>
+            <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSend()} placeholder={pendente ? "sim ou não..." : aiLoading ? "Aguarde..." : "Ex: " + EXEMPLOS[exemploIdx]} disabled={aiLoading} style={{ ...inp, flex: 1, opacity: aiLoading ? 0.6 : 1 }} />
+            <button onClick={() => handleSend()} disabled={!input.trim() || aiLoading} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !input.trim() || aiLoading ? 0.4 : 1 }}>
+              {aiLoading ? "..." : "Enviar"}
+            </button>
           </div>
-          <div style={{ padding: "4px 16px 10px", fontSize: 11, color: subtle, textAlign: "center" }}>Digite o que gastou em linguagem natural</div>
+          <div style={{ padding: "4px 16px 10px", fontSize: 11, color: subtle, textAlign: "center" }}>🤖 Com IA · Digite gastos ou faça perguntas</div>
+        </div>
+      )}
+
+      {/* PERFIL */}
+      {view === "perfil" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: 16, maxWidth: 480 }}>
+          <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 16 }}>MEU PERFIL</div>
+          <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", alignItems: "center", gap: 16, marginBottom: 16 }}>
+            <div style={{ position: "relative" }}>
+              {user.photoURL ? <img src={user.photoURL} style={{ width: 80, height: 80, borderRadius: "50%", border: `3px solid #a0e9c0` }} /> : <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#a0e9c022", border: `3px solid #a0e9c0`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>👤</div>}
+              <button onClick={() => fotoInputRef.current?.click()} disabled={uploadingFoto} style={{ position: "absolute", bottom: 0, right: 0, background: "#a0e9c0", border: "none", borderRadius: "50%", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 14 }}>
+                {uploadingFoto ? "⏳" : "📷"}
+              </button>
+            </div>
+            {!editandoPerfil ? (
+              <>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>{user.displayName || "Sem nome"}</div>
+                  <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>{user.email}</div>
+                </div>
+                <button onClick={() => { setEditandoPerfil(true); setNovoNome(user.displayName || ""); }} style={{ padding: "8px 20px", borderRadius: 20, border: `1px solid ${border}`, background: "none", color: text, fontSize: 13, cursor: "pointer" }}>✏️ Editar nome</button>
+              </>
+            ) : (
+              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 10 }}>
+                <input value={novoNome} onChange={e => setNovoNome(e.target.value)} placeholder="Seu nome" style={inp} autoFocus />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={salvarPerfil} style={{ flex: 1, padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer" }}>Salvar</button>
+                  <button onClick={() => setEditandoPerfil(false)} style={{ flex: 1, padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: muted, cursor: "pointer" }}>Cancelar</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>📊 Meu resumo</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
+                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Gastos</div>
+                <div style={{ fontFamily: "'DM Mono'", fontSize: 16, color: "#a0e9c0" }}>{gastos.length}</div>
+              </div>
+              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
+                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Este mês</div>
+                <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: corMeta }}>{formatCurrency(totalMes)}</div>
+              </div>
+              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
+                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Total</div>
+                <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: "#a0e9c0" }}>{formatCurrency(totalGeral)}</div>
+              </div>
+            </div>
+          </div>
+
+          <button onClick={() => signOut(auth)} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "1px solid #4a1a1a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sair da conta</button>
         </div>
       )}
 
@@ -377,7 +532,7 @@ export default function App() {
                 ))}
               </div>
               {carregando ? <div style={{ textAlign: "center", padding: 40, color: muted }}>Carregando... ☁️</div> :
-                gastosBuscados.length === 0 ? <div style={{ textAlign: "center", padding: 40, color: subtle }}>Nenhum gasto encontrado 🐟</div> : (
+                gastosBuscados.length === 0 ? <div style={{ textAlign: "center", padding: 40, color: subtle }}>Nenhum gasto 🐟</div> : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {gastosBuscados.map(g => {
                     const cat = CATEGORIES[g.categoria] || CATEGORIES.outros;
@@ -442,8 +597,7 @@ export default function App() {
       {/* RESUMO */}
       {view === "resumo" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-          {/* Cards */}
-          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
             <div style={{ flex: 1, padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12 }}>
               <div style={{ fontSize: 10, color: subtle, fontFamily: "'DM Mono'", marginBottom: 4 }}>MÊS ATUAL</div>
               <div style={{ fontFamily: "'DM Mono'", fontSize: 17, color: corMeta, fontWeight: 500 }}>{formatCurrency(totalMes)}</div>
@@ -454,17 +608,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Insights */}
-          {maiorGasto && (
-            <div style={{ padding: "10px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12, fontSize: 13 }}>
-              <span style={{ color: muted }}>💸 Maior gasto: </span>
-              <span style={{ fontWeight: 500 }}>{maiorGasto.descricao}</span>
-              <span style={{ fontFamily: "'DM Mono'", color: "#f97316", marginLeft: 8 }}>{formatCurrency(maiorGasto.valor)}</span>
-            </div>
-          )}
+          {maiorGasto && <div style={{ padding: "10px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12, fontSize: 13 }}><span style={{ color: muted }}>💸 Maior gasto: </span><span style={{ fontWeight: 500 }}>{maiorGasto.descricao}</span><span style={{ fontFamily: "'DM Mono'", color: "#f97316", marginLeft: 8 }}>{formatCurrency(maiorGasto.valor)}</span></div>}
 
-          {/* Comparativo por mês */}
-          <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 16 }}>
+          <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 12 }}>ÚLTIMOS 6 MESES</div>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 80 }}>
               {porMes.map((m, i) => {
@@ -472,8 +618,8 @@ export default function App() {
                 const isAtual = i === 5;
                 return (
                   <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                    <div style={{ fontSize: 9, color: muted, fontFamily: "'DM Mono'" }}>{m.total > 0 ? `${(m.total/1000).toFixed(1)}k` : ""}</div>
-                    <div style={{ width: "100%", height: h, background: isAtual ? "#a0e9c0" : (dark ? "#2a2a38" : "#e0e0e0"), borderRadius: 4, transition: "height 0.5s" }} />
+                    <div style={{ fontSize: 9, color: muted }}>{m.total > 0 ? `${(m.total/1000).toFixed(1)}k` : ""}</div>
+                    <div style={{ width: "100%", height: h, background: isAtual ? "#a0e9c0" : (dark ? "#2a2a38" : "#e0e0e0"), borderRadius: 4 }} />
                     <div style={{ fontSize: 10, color: isAtual ? "#a0e9c0" : muted }}>{m.label}</div>
                   </div>
                 );
@@ -481,21 +627,19 @@ export default function App() {
             </div>
           </div>
 
-          {/* Meta */}
           {config.meta > 0 && (
             <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 13 }}>🎯 Meta mensal</span>
+                <span style={{ fontSize: 13 }}>🎯 Meta</span>
                 <span style={{ fontFamily: "'DM Mono'", fontSize: 13, color: corMeta }}>{formatCurrency(totalMes)} / {formatCurrency(config.meta)}</span>
               </div>
               <div style={{ height: 8, background: dark ? "#1e1e2e" : "#eee", borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${pctMeta}%`, background: corMeta, borderRadius: 4, transition: "width 0.5s" }} />
+                <div style={{ height: "100%", width: `${pctMeta}%`, background: corMeta, borderRadius: 4 }} />
               </div>
               <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>{config.meta - totalMes > 0 ? `Restam ${formatCurrency(config.meta - totalMes)}` : `Excedido em ${formatCurrency(totalMes - config.meta)}`}</div>
             </div>
           )}
 
-          {/* Por categoria */}
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 10 }}>POR CATEGORIA</div>
           {porCategoria.map(cat => {
             const pct = totalGeral > 0 ? (cat.total / totalGeral) * 100 : 0;
@@ -539,29 +683,21 @@ export default function App() {
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 14 }}>CONFIGURAÇÕES</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>👤 Conta</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                {user.photoURL && <img src={user.photoURL} style={{ width: 36, height: 36, borderRadius: "50%" }} />}
-                <div><div style={{ fontSize: 13, fontWeight: 500 }}>{user.displayName}</div><div style={{ fontSize: 11, color: muted }}>{user.email}</div></div>
-              </div>
-              <button onClick={() => signOut(auth)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: muted, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sair da conta</button>
-            </div>
-            <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🎯 Meta mensal</div>
               <input value={metaInput} onChange={e => setMetaInput(e.target.value)} placeholder="Ex: 3000" type="number" style={{ ...inp, marginBottom: 10 }} />
               <button onClick={() => { const v = parseFloat(metaInput); setConfig(c => ({ ...c, meta: isNaN(v) ? 0 : v })); alert(v > 0 ? `Meta: ${formatCurrency(v)}` : "Meta removida!"); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Salvar meta</button>
             </div>
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{dark ? "☀️" : "🌙"} Tema</div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{dark ? "☀️" : "🌙"} Tema</div>
               <button onClick={() => setDark(d => !d)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>{dark ? "☀️ Modo claro" : "🌙 Modo escuro"}</button>
             </div>
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>📤 Exportar</div>
-              <button onClick={() => exportarExcel(gastos)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📥 Baixar planilha Excel</button>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>📤 Exportar</div>
+              <button onClick={() => exportarExcel(gastos)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📥 Baixar planilha</button>
             </div>
             <div style={{ background: card, border: "1px solid #4a1a1a", borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: "#f87171" }}>🗑️ Apagar tudo</div>
-              <button onClick={async () => { if (window.confirm("Apagar TODOS os gastos?")) await removeGastos(gastos.map(g => g.id)); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "1px solid #7f2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Apagar todos</button>
+              <button onClick={async () => { if (window.confirm("Apagar TODOS?")) await removeGastos(gastos.map(g => g.id)); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "1px solid #7f2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Apagar todos</button>
             </div>
           </div>
         </div>
