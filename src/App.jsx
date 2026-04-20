@@ -13,7 +13,7 @@ const firebaseConfig = {
   appId: "1:542269306227:web:56f00e4e8ef107a15b4106",
 };
 
-const GEMINI_KEY = "AIzaSyDttpVWDnrB2lTVbgsKdS0fwst2FwQ7i70";
+const GEMINI_KEY = "AIzaSyC7jt68Etol0qrzmEu3atG4Mh2FbWmYzxA";
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
