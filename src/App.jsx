@@ -73,7 +73,7 @@ function exportarExcel(gastos) {
 
 async function askGemini(prompt, gastos, totalMes, config) {
   const resumo = `Dados do usuário: ${gastos.length} gastos registrados. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta mensal: ${formatCurrency(config.meta)}.` : ""} Últimos gastos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
