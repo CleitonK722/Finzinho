@@ -1,8 +1,22 @@
 import { useState, useEffect, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, updateDoc, query, orderBy } from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyADHYjRMDYsXT2gXkNwR3VzEpc8oOr3o04",
+  authDomain: "finanzinho-2966b.firebaseapp.com",
+  projectId: "finanzinho-2966b",
+  storageBucket: "finanzinho-2966b.firebasestorage.app",
+  messagingSenderId: "542269306227",
+  appId: "1:542269306227:web:56f00e4e8ef107a15b4106",
+  measurementId: "G-8TSVTTSFQ4"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 const SENHA_CORRETA = "#Kempner123";
 const LOGIN_KEY = "finzinho-logado";
-const STORAGE_KEY = "finzinho-gastos-v3";
 const CONFIG_KEY = "finzinho-config-v3";
 const FIXOS_KEY = "finzinho-fixos-v1";
 
@@ -31,6 +45,7 @@ function detectCategory(text) {
   }
   return "outros";
 }
+
 function parseGasto(text) {
   const valorMatch = text.match(/r?\$?\s?(\d+(?:[.,]\d{1,2})?)/i);
   if (!valorMatch) return null;
@@ -42,12 +57,7 @@ function parseGasto(text) {
 
 function exportarExcel(gastos) {
   const header = ["Data","Descrição","Categoria","Valor (R$)"];
-  const rows = gastos.map(g => [
-    formatDate(g.data),
-    g.descricao,
-    CATEGORIES[g.categoria]?.label || "Outros",
-    g.valor.toFixed(2).replace(".", ",")
-  ]);
+  const rows = gastos.map(g => [formatDate(g.data), g.descricao, CATEGORIES[g.categoria]?.label || "Outros", g.valor.toFixed(2).replace(".", ",")]);
   const csv = [header, ...rows].map(r => r.join(";")).join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -93,6 +103,7 @@ export default function App() {
   const [gastos, setGastos] = useState([]);
   const [fixos, setFixos] = useState([]);
   const [config, setConfig] = useState({ meta: 0 });
+  const [carregando, setCarregando] = useState(false);
   const [view, setView] = useState("chat");
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -104,7 +115,7 @@ export default function App() {
   const [exemploIdx, setExemploIdx] = useState(0);
   const [editando, setEditando] = useState(null);
   const [metaInput, setMetaInput] = useState("");
-  const [subView, setSubView] = useState("lista"); // lista | fixos
+  const [subView, setSubView] = useState("lista");
   const messagesEndRef = useRef(null);
 
   const bg = dark ? "#0f0f13" : "#f5f5f0";
@@ -115,39 +126,65 @@ export default function App() {
   const subtle = dark ? "#444" : "#bbb";
 
   useEffect(() => { const s = localStorage.getItem(LOGIN_KEY); if (s === "true") setLogado(true); setChecando(false); }, []);
+
   useEffect(() => {
     if (!logado) return;
-    try { const s = localStorage.getItem(STORAGE_KEY); if (s) setGastos(JSON.parse(s)); } catch {}
+    carregarGastos();
     try { const s = localStorage.getItem(CONFIG_KEY); if (s) { const c = JSON.parse(s); setConfig(c); setMetaInput(c.meta > 0 ? c.meta.toString() : ""); } } catch {}
     try { const s = localStorage.getItem(FIXOS_KEY); if (s) setFixos(JSON.parse(s)); } catch {}
     const interval = setInterval(() => setExemploIdx(i => (i + 1) % EXEMPLOS.length), 3000);
     return () => clearInterval(interval);
   }, [logado]);
 
-  useEffect(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(gastos)); } catch {} }, [gastos]);
+  const carregarGastos = async () => {
+    setCarregando(true);
+    try {
+      const q = query(collection(db, "gastos"), orderBy("data", "desc"));
+      const snap = await getDocs(q);
+      setGastos(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (e) { console.error(e); }
+    setCarregando(false);
+  };
+
   useEffect(() => { try { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch {} }, [config]);
   useEffect(() => { try { localStorage.setItem(FIXOS_KEY, JSON.stringify(fixos)); } catch {} }, [fixos]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const addGasto = (g) => { const novo = { ...g, id: Date.now(), data: new Date().toISOString() }; setGastos(prev => [novo, ...prev]); return novo; };
-  const removeGastos = (ids) => { setGastos(prev => prev.filter(g => !ids.includes(g.id))); setSelecionados([]); };
-  const toggleSelecionado = (id) => setSelecionados(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+  const addGasto = async (g) => {
+    const novo = { ...g, data: new Date().toISOString() };
+    const docRef = await addDoc(collection(db, "gastos"), novo);
+    const comId = { id: docRef.id, ...novo };
+    setGastos(prev => [comId, ...prev]);
+    return comId;
+  };
 
-  const salvarEdicao = () => {
+  const removeGastos = async (ids) => {
+    await Promise.all(ids.map(id => deleteDoc(doc(db, "gastos", id))));
+    setGastos(prev => prev.filter(g => !ids.includes(g.id)));
+    setSelecionados([]);
+  };
+
+  const salvarEdicao = async () => {
     if (!editando) return;
-    setGastos(prev => prev.map(g => g.id === editando.id ? { ...g, descricao: editando.descricao, valor: parseFloat(String(editando.valor).replace(",", ".")), categoria: editando.categoria } : g));
+    const { id, ...dados } = editando;
+    await updateDoc(doc(db, "gastos", id), { descricao: dados.descricao, valor: parseFloat(String(dados.valor).replace(",", ".")), categoria: dados.categoria });
+    setGastos(prev => prev.map(g => g.id === id ? { ...g, ...dados } : g));
     setEditando(null);
   };
 
-  const aplicarFixosDoMes = () => {
+  const toggleSelecionado = (id) => setSelecionados(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+
+  const aplicarFixosDoMes = async () => {
     const mes = getMesAtual();
     const jaAplicados = gastos.filter(g => g.fixoMes === mes).map(g => g.fixoId);
-    const novos = fixos.filter(f => !jaAplicados.includes(f.id)).map(f => ({ ...f, id: Date.now() + Math.random(), fixoId: f.id, fixoMes: mes, data: new Date().toISOString() }));
-    if (novos.length > 0) { setGastos(prev => [...novos, ...prev]); return novos.length; }
-    return 0;
+    const novos = fixos.filter(f => !jaAplicados.includes(f.id));
+    for (const f of novos) {
+      await addGasto({ ...f, fixoId: f.id, fixoMes: mes });
+    }
+    return novos.length;
   };
 
-  const handleSend = (overrideInput) => {
+  const handleSend = async (overrideInput) => {
     const text = (overrideInput !== undefined ? overrideInput : input).trim();
     if (!text) return;
     setInput("");
@@ -155,7 +192,7 @@ export default function App() {
     if (pendente) {
       const lower = text.toLowerCase();
       if (["sim","s","yes","confirma","ok","pode","isso"].some(w => lower.includes(w))) {
-        const novo = addGasto(pendente); setPendente(null);
+        const novo = await addGasto(pendente); setPendente(null);
         setMessages(prev => [...prev, { role: "bot", text: `✅ Anotado!\n${CATEGORIES[novo.categoria].emoji} ${novo.descricao}\n${formatCurrency(novo.valor)}`, gasto: novo }]);
       } else if (["não","nao","n","no","cancela"].some(w => lower.includes(w))) {
         setPendente(null); setMessages(prev => [...prev, { role: "bot", text: "Ok, cancelei! 😊" }]);
@@ -169,9 +206,9 @@ export default function App() {
     setMessages(prev => [...prev, { role: "bot", text: `Confirma?\n\n${cat.emoji} ${resultado.descricao}\n💰 ${formatCurrency(resultado.valor)}\n📂 ${cat.label}`, confirmando: true }]);
   };
 
-  const handleFormSubmit = () => {
+  const handleFormSubmit = async () => {
     if (!form.descricao || !form.valor) return;
-    const novo = addGasto({ ...form, valor: parseFloat(String(form.valor).replace(",", ".")) });
+    const novo = await addGasto({ ...form, valor: parseFloat(String(form.valor).replace(",", ".")) });
     setForm({ descricao: "", valor: "", categoria: "alimentacao" });
     setMessages(prev => [...prev, { role: "bot", text: `✅ Adicionado!\n${CATEGORIES[novo.categoria].emoji} ${novo.descricao}\n${formatCurrency(novo.valor)}`, gasto: novo }]);
     setView("chat");
@@ -196,7 +233,7 @@ export default function App() {
   if (!logado) return <LoginScreen onLogin={() => setLogado(true)} dark={dark} />;
 
   return (
-    <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", color: text, display: "flex", flexDirection: "column", transition: "background 0.3s, color 0.3s" }}>
+    <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", color: text, display: "flex", flexDirection: "column", transition: "background 0.3s" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
       {/* Header */}
@@ -205,7 +242,7 @@ export default function App() {
           <span style={{ fontSize: 20 }}>🐟</span>
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>Finzinho</div>
-            <div style={{ fontSize: 10, color: muted, fontFamily: "'DM Mono'" }}>controle de gastos</div>
+            <div style={{ fontSize: 10, color: muted, fontFamily: "'DM Mono'" }}>{carregando ? "carregando..." : "controle de gastos"}</div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -214,14 +251,14 @@ export default function App() {
             <div style={{ fontFamily: "'DM Mono'", fontSize: 14, color: corMeta, fontWeight: 500 }}>{formatCurrency(totalMes)}</div>
             {config.meta > 0 && <div style={{ fontSize: 9, color: muted }}>{formatCurrency(config.meta)} limite</div>}
           </div>
-          <button onClick={() => setDark(d => !d)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", color: muted, fontSize: 14, cursor: "pointer" }}>{dark ? "☀️" : "🌙"}</button>
-          <button onClick={() => { localStorage.removeItem(LOGIN_KEY); setLogado(false); }} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", color: muted, fontSize: 11, cursor: "pointer", fontFamily: "'DM Sans'" }}>Sair</button>
+          <button onClick={() => setDark(d => !d)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", fontSize: 14, cursor: "pointer" }}>{dark ? "☀️" : "🌙"}</button>
+          <button onClick={() => { localStorage.removeItem(LOGIN_KEY); setLogado(false); }} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 8px", color: muted, fontSize: 11, cursor: "pointer" }}>Sair</button>
         </div>
       </div>
 
       {/* Meta bar */}
       {config.meta > 0 && (
-        <div style={{ padding: "6px 16px", background: bg, borderBottom: `1px solid ${border}` }}>
+        <div style={{ padding: "6px 16px", borderBottom: `1px solid ${border}` }}>
           <div style={{ height: 4, background: dark ? "#1e1e2e" : "#eee", borderRadius: 2, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${pctMeta}%`, background: corMeta, borderRadius: 2, transition: "width 0.5s" }} />
           </div>
@@ -230,9 +267,9 @@ export default function App() {
       )}
 
       {/* Nav */}
-      <div style={{ display: "flex", borderBottom: `1px solid ${border}`, background: bg }}>
+      <div style={{ display: "flex", borderBottom: `1px solid ${border}` }}>
         {[["chat","💬"],["historico","🕐"],["resumo","📊"],["form","➕"],["config","⚙️"]].map(([key, label]) => (
-          <button key={key} onClick={() => { setView(key); setSelecionados([]); setEditando(null); }} style={{ flex: 1, padding: "10px 0", border: "none", background: "none", color: view === key ? "#a0e9c0" : muted, fontFamily: "'DM Sans'", fontSize: 18, cursor: "pointer", borderBottom: view === key ? "2px solid #a0e9c0" : "2px solid transparent", transition: "all 0.2s" }}>{label}</button>
+          <button key={key} onClick={() => { setView(key); setSelecionados([]); setEditando(null); }} style={{ flex: 1, padding: "10px 0", border: "none", background: "none", color: view === key ? "#a0e9c0" : muted, fontSize: 18, cursor: "pointer", borderBottom: view === key ? "2px solid #a0e9c0" : "2px solid transparent", transition: "all 0.2s" }}>{label}</button>
         ))}
       </div>
 
@@ -254,7 +291,7 @@ export default function App() {
               )}
             </div>
           ) : (
-            <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
               {messages.map((msg, i) => (
                 <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
                   <div style={{ maxWidth: "82%", background: msg.role === "user" ? (dark ? "#1e3a5f" : "#e8f0ff") : msg.confirmando ? (dark ? "#1a2a1a" : "#f0fff4") : card, border: `1px solid ${msg.role === "user" ? (dark ? "#2a4a7f" : "#c0d0ff") : msg.confirmando ? (dark ? "#2a4a2a" : "#b0e0c0") : border}`, borderRadius: msg.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 14px", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-line", color: text }}>
@@ -275,13 +312,13 @@ export default function App() {
           )}
           {pendente && (
             <div style={{ padding: "0 16px 8px", display: "flex", gap: 8 }}>
-              <button onClick={() => handleSend("sim")} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid #2a4a2a", background: dark ? "#1a3a1a" : "#f0fff4", color: "#a0e9c0", fontFamily: "'DM Sans'", fontSize: 13, cursor: "pointer" }}>✅ Sim</button>
-              <button onClick={() => handleSend("não")} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid #4a2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontFamily: "'DM Sans'", fontSize: 13, cursor: "pointer" }}>❌ Não</button>
+              <button onClick={() => handleSend("sim")} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid #2a4a2a", background: dark ? "#1a3a1a" : "#f0fff4", color: "#a0e9c0", fontSize: 13, cursor: "pointer" }}>✅ Sim</button>
+              <button onClick={() => handleSend("não")} style={{ flex: 1, padding: "8px", borderRadius: 10, border: "1px solid #4a2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontSize: 13, cursor: "pointer" }}>❌ Não</button>
             </div>
           )}
           <div style={{ padding: "10px 16px 6px", borderTop: `1px solid ${border}`, display: "flex", gap: 8 }}>
             <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSend()} placeholder={pendente ? "sim ou não..." : "Ex: " + EXEMPLOS[exemploIdx]} style={{ ...inp, flex: 1 }} />
-            <button onClick={() => handleSend()} disabled={!input.trim()} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'", opacity: !input.trim() ? 0.4 : 1 }}>Enviar</button>
+            <button onClick={() => handleSend()} disabled={!input.trim()} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !input.trim() ? 0.4 : 1 }}>Enviar</button>
           </div>
           <div style={{ padding: "4px 16px 10px", fontSize: 11, color: subtle, textAlign: "center" }}>Digite o que gastou em linguagem natural</div>
         </div>
@@ -290,10 +327,9 @@ export default function App() {
       {/* HISTÓRICO */}
       {view === "historico" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-          {/* Sub nav */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             {[["lista","📋 Gastos"],["fixos","🔄 Fixos"]].map(([k, l]) => (
-              <button key={k} onClick={() => setSubView(k)} style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${subView === k ? "#a0e9c0" : border}`, background: subView === k ? "#a0e9c022" : "none", color: subView === k ? "#a0e9c0" : muted, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans'" }}>{l}</button>
+              <button key={k} onClick={() => setSubView(k)} style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${subView === k ? "#a0e9c0" : border}`, background: subView === k ? "#a0e9c022" : "none", color: subView === k ? "#a0e9c0" : muted, fontSize: 13, cursor: "pointer" }}>{l}</button>
             ))}
           </div>
 
@@ -303,20 +339,21 @@ export default function App() {
                 <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'" }}>{gastos.length} GASTOS · {formatCurrency(totalGeral)}</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   {selecionados.length > 0 && (
-                    <button onClick={() => { if (window.confirm(`Apagar ${selecionados.length} gasto(s)?`)) removeGastos(selecionados); }} style={{ background: dark ? "#3a1a1a" : "#fff0f0", border: "1px solid #7f2a2a", borderRadius: 8, padding: "5px 10px", color: "#f87171", fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans'", fontWeight: 600 }}>🗑️ Apagar {selecionados.length}</button>
+                    <button onClick={() => { if (window.confirm(`Apagar ${selecionados.length} gasto(s)?`)) removeGastos(selecionados); }} style={{ background: dark ? "#3a1a1a" : "#fff0f0", border: "1px solid #7f2a2a", borderRadius: 8, padding: "5px 10px", color: "#f87171", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>🗑️ Apagar {selecionados.length}</button>
                   )}
-                  <button onClick={() => exportarExcel(gastos)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 10px", color: muted, fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans'" }}>📤 Excel</button>
+                  <button onClick={() => exportarExcel(gastos)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 10px", color: muted, fontSize: 12, cursor: "pointer" }}>📤 Excel</button>
                 </div>
               </div>
 
-              {/* Filtro categorias */}
               <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
                 {[["todas","Todas","#a0e9c0"], ...Object.entries(CATEGORIES).map(([k,c]) => [k,`${c.emoji}`,c.color])].map(([key, label, color]) => (
-                  <button key={key} onClick={() => setFilterCat(key)} style={{ padding: "4px 10px", borderRadius: 20, border: `1px solid ${filterCat === key ? color : border}`, background: filterCat === key ? color+"22" : "none", color: filterCat === key ? color : muted, fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans'" }}>{label}</button>
+                  <button key={key} onClick={() => setFilterCat(key)} style={{ padding: "4px 10px", borderRadius: 20, border: `1px solid ${filterCat === key ? color : border}`, background: filterCat === key ? color+"22" : "none", color: filterCat === key ? color : muted, fontSize: 12, cursor: "pointer" }}>{label}</button>
                 ))}
               </div>
 
-              {gastosFiltrados.length === 0 ? (
+              {carregando ? (
+                <div style={{ textAlign: "center", padding: 40, color: muted }}>Carregando... ☁️</div>
+              ) : gastosFiltrados.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 40, color: subtle, fontSize: 14 }}>Nenhum gasto ainda 🐟</div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -333,8 +370,8 @@ export default function App() {
                           ))}
                         </div>
                         <div style={{ display: "flex", gap: 8 }}>
-                          <button onClick={salvarEdicao} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans'" }}>Salvar</button>
-                          <button onClick={() => setEditando(null)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${border}`, background: "none", color: muted, cursor: "pointer", fontFamily: "'DM Sans'" }}>Cancelar</button>
+                          <button onClick={salvarEdicao} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer" }}>Salvar</button>
+                          <button onClick={() => setEditando(null)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${border}`, background: "none", color: muted, cursor: "pointer" }}>Cancelar</button>
                         </div>
                       </div>
                     );
@@ -347,14 +384,14 @@ export default function App() {
                           <div style={{ fontSize: 10, color: subtle, marginTop: 1 }}>{cat.label} · {formatDate(g.data)}</div>
                         </div>
                         <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: cat.color, flexShrink: 0 }}>{formatCurrency(g.valor)}</div>
-                        <button onClick={() => setEditando({ ...g })} style={{ background: "none", border: "none", color: muted, cursor: "pointer", fontSize: 14, padding: "0 2px", flexShrink: 0 }}>✏️</button>
+                        <button onClick={() => setEditando({ ...g })} style={{ background: "none", border: "none", color: muted, cursor: "pointer", fontSize: 14, padding: "0 2px" }}>✏️</button>
                       </div>
                     );
                   })}
                 </div>
               )}
               {gastos.length > 0 && selecionados.length === 0 && !editando && (
-                <div style={{ textAlign: "center", marginTop: 12, fontSize: 11, color: subtle }}>Toque no ✏️ para editar · Toque no quadrado para selecionar e apagar</div>
+                <div style={{ textAlign: "center", marginTop: 12, fontSize: 11, color: subtle }}>Toque no ✏️ para editar · Toque no quadrado para selecionar</div>
               )}
             </>
           )}
@@ -370,20 +407,17 @@ export default function App() {
                     <button key={key} onClick={() => setFixoForm(f => ({ ...f, categoria: key }))} style={{ padding: "5px 10px", borderRadius: 16, border: `1px solid ${fixoForm.categoria === key ? cat.color : border}`, background: fixoForm.categoria === key ? cat.color+"22" : "none", color: fixoForm.categoria === key ? cat.color : muted, fontSize: 12, cursor: "pointer" }}>{cat.emoji} {cat.label}</button>
                   ))}
                 </div>
-                <button onClick={handleFixoAdd} disabled={!fixoForm.descricao || !fixoForm.valor} style={{ padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'", opacity: !fixoForm.descricao || !fixoForm.valor ? 0.4 : 1 }}>+ Adicionar fixo</button>
+                <button onClick={handleFixoAdd} disabled={!fixoForm.descricao || !fixoForm.valor} style={{ padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !fixoForm.descricao || !fixoForm.valor ? 0.4 : 1 }}>+ Adicionar fixo</button>
               </div>
-
-              {fixos.length === 0 ? (
-                <div style={{ textAlign: "center", padding: 30, color: subtle, fontSize: 13 }}>Nenhum gasto fixo cadastrado</div>
-              ) : (
+              {fixos.length > 0 && (
                 <>
-                  <button onClick={() => { const n = aplicarFixosDoMes(); alert(n > 0 ? `${n} gasto(s) fixo(s) aplicado(s)!` : "Fixos já aplicados este mês!"); }} style={{ width: "100%", marginBottom: 10, padding: "10px", borderRadius: 10, border: `1px solid #a0e9c0`, background: "none", color: "#a0e9c0", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'" }}>🔄 Aplicar fixos deste mês</button>
+                  <button onClick={async () => { const n = await aplicarFixosDoMes(); alert(n > 0 ? `${n} gasto(s) aplicado(s)!` : "Fixos já aplicados este mês!"); }} style={{ width: "100%", marginBottom: 10, padding: "10px", borderRadius: 10, border: `1px solid #a0e9c0`, background: "none", color: "#a0e9c0", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>🔄 Aplicar fixos deste mês</button>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {fixos.map(f => {
                       const cat = CATEGORIES[f.categoria] || CATEGORIES.outros;
                       return (
                         <div key={f.id} style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: "11px 12px", display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ width: 30, height: 30, borderRadius: 8, background: cat.color+"22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{cat.emoji}</div>
+                          <div style={{ width: 30, height: 30, borderRadius: 8, background: cat.color+"22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>{cat.emoji}</div>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 13, fontWeight: 500 }}>{f.descricao}</div>
                             <div style={{ fontSize: 10, color: subtle }}>{cat.label}</div>
@@ -414,7 +448,6 @@ export default function App() {
               <div style={{ fontFamily: "'DM Mono'", fontSize: 18, color: "#a0e9c0", fontWeight: 500 }}>{formatCurrency(totalGeral)}</div>
             </div>
           </div>
-
           {config.meta > 0 && (
             <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -429,32 +462,24 @@ export default function App() {
               </div>
             </div>
           )}
-
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 10 }}>POR CATEGORIA</div>
           {porCategoria.length === 0 ? (
             <div style={{ textAlign: "center", padding: 40, color: subtle, fontSize: 14 }}>Nenhum gasto ainda 🐟</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {porCategoria.map(cat => {
-                const pct = totalGeral > 0 ? (cat.total / totalGeral) * 100 : 0;
-                return (
-                  <div key={cat.key} style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: "12px 14px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 16 }}>{cat.emoji}</span>
-                        <span style={{ fontSize: 13 }}>{cat.label}</span>
-                      </div>
-                      <span style={{ fontFamily: "'DM Mono'", fontSize: 13, color: cat.color }}>{formatCurrency(cat.total)}</span>
-                    </div>
-                    <div style={{ height: 4, background: dark ? "#0f0f13" : "#eee", borderRadius: 2, overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${pct}%`, background: cat.color, borderRadius: 2, transition: "width 0.5s" }} />
-                    </div>
-                    <div style={{ fontSize: 10, color: subtle, marginTop: 3 }}>{pct.toFixed(1)}% do total</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          ) : porCategoria.map(cat => {
+            const pct = totalGeral > 0 ? (cat.total / totalGeral) * 100 : 0;
+            return (
+              <div key={cat.key} style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 16 }}>{cat.emoji}</span><span style={{ fontSize: 13 }}>{cat.label}</span></div>
+                  <span style={{ fontFamily: "'DM Mono'", fontSize: 13, color: cat.color }}>{formatCurrency(cat.total)}</span>
+                </div>
+                <div style={{ height: 4, background: dark ? "#0f0f13" : "#eee", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: cat.color, borderRadius: 2 }} />
+                </div>
+                <div style={{ fontSize: 10, color: subtle, marginTop: 3 }}>{pct.toFixed(1)}% do total</div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -463,23 +488,17 @@ export default function App() {
         <div style={{ flex: 1, overflowY: "auto", padding: 16, maxWidth: 480 }}>
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 14 }}>ADICIONAR GASTO</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div>
-              <label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>Descrição</label>
-              <input value={form.descricao} onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))} placeholder="Ex: Almoço no restaurante" style={inp} />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>Valor (R$)</label>
-              <input value={form.valor} onChange={e => setForm(f => ({ ...f, valor: e.target.value }))} placeholder="0,00" type="number" min="0" step="0.01" style={{ ...inp, fontFamily: "'DM Mono'" }} />
-            </div>
+            <div><label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>Descrição</label><input value={form.descricao} onChange={e => setForm(f => ({ ...f, descricao: e.target.value }))} placeholder="Ex: Almoço no restaurante" style={inp} /></div>
+            <div><label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 6 }}>Valor (R$)</label><input value={form.valor} onChange={e => setForm(f => ({ ...f, valor: e.target.value }))} placeholder="0,00" type="number" min="0" step="0.01" style={{ ...inp, fontFamily: "'DM Mono'" }} /></div>
             <div>
               <label style={{ fontSize: 12, color: muted, display: "block", marginBottom: 8 }}>Categoria</label>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {Object.entries(CATEGORIES).map(([key, cat]) => (
-                  <button key={key} onClick={() => setForm(f => ({ ...f, categoria: key }))} style={{ padding: "7px 12px", borderRadius: 20, border: `1px solid ${form.categoria === key ? cat.color : border}`, background: form.categoria === key ? cat.color+"22" : "none", color: form.categoria === key ? cat.color : muted, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans'" }}>{cat.emoji} {cat.label}</button>
+                  <button key={key} onClick={() => setForm(f => ({ ...f, categoria: key }))} style={{ padding: "7px 12px", borderRadius: 20, border: `1px solid ${form.categoria === key ? cat.color : border}`, background: form.categoria === key ? cat.color+"22" : "none", color: form.categoria === key ? cat.color : muted, fontSize: 13, cursor: "pointer" }}>{cat.emoji} {cat.label}</button>
                 ))}
               </div>
             </div>
-            <button onClick={handleFormSubmit} disabled={!form.descricao || !form.valor} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 12, padding: "12px", fontWeight: 600, fontSize: 15, cursor: "pointer", fontFamily: "'DM Sans'", marginTop: 8, opacity: !form.descricao || !form.valor ? 0.4 : 1 }}>Adicionar gasto</button>
+            <button onClick={handleFormSubmit} disabled={!form.descricao || !form.valor} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 12, padding: "12px", fontWeight: 600, fontSize: 15, cursor: "pointer", marginTop: 8, opacity: !form.descricao || !form.valor ? 0.4 : 1 }}>Adicionar gasto</button>
           </div>
         </div>
       )}
@@ -492,26 +511,23 @@ export default function App() {
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>🎯 Meta mensal</div>
               <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>Defina um limite de gastos por mês</div>
-              <input value={metaInput} onChange={e => setMetaInput(e.target.value)} placeholder="Ex: 3000" type="number" style={{ ...inp, fontFamily: "'DM Mono'", marginBottom: 10 }} />
-              <button onClick={() => { const v = parseFloat(metaInput); setConfig(c => ({ ...c, meta: isNaN(v) ? 0 : v })); alert(v > 0 ? `Meta definida: ${formatCurrency(v)}` : "Meta removida!"); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'" }}>Salvar meta</button>
+              <input value={metaInput} onChange={e => setMetaInput(e.target.value)} placeholder="Ex: 3000" type="number" style={{ ...inp, marginBottom: 10 }} />
+              <button onClick={() => { const v = parseFloat(metaInput); setConfig(c => ({ ...c, meta: isNaN(v) ? 0 : v })); alert(v > 0 ? `Meta definida: ${formatCurrency(v)}` : "Meta removida!"); }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Salvar meta</button>
             </div>
-
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{dark ? "☀️" : "🌙"} Tema</div>
               <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>Alternar entre modo escuro e claro</div>
-              <button onClick={() => setDark(d => !d)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'" }}>{dark ? "☀️ Mudar para claro" : "🌙 Mudar para escuro"}</button>
+              <button onClick={() => setDark(d => !d)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>{dark ? "☀️ Mudar para claro" : "🌙 Mudar para escuro"}</button>
             </div>
-
             <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>📤 Exportar dados</div>
-              <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>Baixar todos os gastos em planilha Excel</div>
-              <button onClick={() => exportarExcel(gastos)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'" }}>📥 Baixar planilha</button>
+              <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>Baixar todos os gastos em planilha</div>
+              <button onClick={() => exportarExcel(gastos)} style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📥 Baixar planilha</button>
             </div>
-
             <div style={{ background: card, border: "1px solid #4a1a1a", borderRadius: 12, padding: 16 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, color: "#f87171" }}>🗑️ Apagar tudo</div>
               <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>Remove todos os gastos permanentemente</div>
-              <button onClick={() => { if (window.confirm("Tem certeza? Isso apaga TODOS os gastos!")) { setGastos([]); setSelecionados([]); } }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "1px solid #7f2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans'" }}>Apagar todos os gastos</button>
+              <button onClick={async () => { if (window.confirm("Tem certeza? Isso apaga TODOS os gastos!")) { await removeGastos(gastos.map(g => g.id)); } }} style={{ width: "100%", padding: "10px", borderRadius: 10, border: "1px solid #7f2a2a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Apagar todos os gastos</button>
             </div>
           </div>
         </div>
