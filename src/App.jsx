@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, updateDoc, query, orderBy, where } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const firebaseConfig = {
   apiKey: "AIzaSyADHYjRMDYsXT2gXkNwR3VzEpc8oOr3o04",
@@ -14,6 +15,7 @@ const firebaseConfig = {
 };
 
 const GEMINI_KEY = "AIzaSyC7jt68Etol0qrzmEu3atG4Mh2FbWmYzxA";
+const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
@@ -72,59 +74,33 @@ function exportarExcel(gastos) {
 }
 
 async function askGemini(prompt, gastos, totalMes, config) {
-  const resumo = `Dados do usuário: ${gastos.length} gastos registrados. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta mensal: ${formatCurrency(config.meta)}.` : ""} Últimos gastos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: `Você é o Finzinho, um assistente simpático de controle de gastos pessoais. Responda em português brasileiro, de forma curta e amigável. Use emojis com moderação. ${resumo}\n\nPergunta do usuário: ${prompt}` }] }]
-    })
-  });
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "Desculpe, não consegui responder agora 😅";
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+  const resumo = `Dados: ${gastos.length} gastos. Total do mês: ${formatCurrency(totalMes)}. ${config.meta > 0 ? `Meta: ${formatCurrency(config.meta)}.` : ""} Últimos: ${gastos.slice(0, 5).map(g => `${g.descricao} (${formatCurrency(g.valor)})`).join(", ")}.`;
+  const result = await model.generateContent(`Você é o Finzinho 🐟, assistente de controle de gastos. Responda em português, de forma curta e amigável. ${resumo}\n\nPergunta: ${prompt}`);
+  return result.response.text();
 }
 
-// Tela de Login
 function LoginScreen({ dark }) {
-  const [modo, setModo] = useState("opcoes"); // opcoes | email-login | email-cadastro
+  const [modo, setModo] = useState("opcoes");
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [nome, setNome] = useState("");
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState("");
-
   const bg = dark ? "#0f0f13" : "#f5f5f0";
   const card = dark ? "#1a1a24" : "#ffffff";
   const border = dark ? "#2a2a38" : "#e0e0e0";
   const text = dark ? "#e8e8f0" : "#1a1a24";
   const muted = dark ? "#666" : "#999";
-
-  const handleGoogle = async () => {
-    setLoading(true); setErro("");
-    try { await signInWithPopup(auth, googleProvider); } catch (e) { setErro("Erro ao entrar com Google"); setLoading(false); }
-  };
-
-  const handleEmailLogin = async () => {
-    setLoading(true); setErro("");
-    try { await signInWithEmailAndPassword(auth, email, senha); } catch (e) { setErro("Email ou senha incorretos"); setLoading(false); }
-  };
-
+  const handleGoogle = async () => { setLoading(true); setErro(""); try { await signInWithPopup(auth, googleProvider); } catch { setErro("Erro ao entrar com Google"); setLoading(false); } };
+  const handleEmailLogin = async () => { setLoading(true); setErro(""); try { await signInWithEmailAndPassword(auth, email, senha); } catch { setErro("Email ou senha incorretos"); setLoading(false); } };
   const handleEmailCadastro = async () => {
     if (!nome.trim()) { setErro("Digite seu nome"); return; }
     setLoading(true); setErro("");
-    try {
-      const cred = await createUserWithEmailAndPassword(auth, email, senha);
-      await updateProfile(cred.user, { displayName: nome });
-    } catch (e) {
-      if (e.code === "auth/email-already-in-use") setErro("Email já cadastrado");
-      else if (e.code === "auth/weak-password") setErro("Senha deve ter pelo menos 6 caracteres");
-      else setErro("Erro ao criar conta");
-      setLoading(false);
-    }
+    try { const cred = await createUserWithEmailAndPassword(auth, email, senha); await updateProfile(cred.user, { displayName: nome }); }
+    catch (e) { setErro(e.code === "auth/email-already-in-use" ? "Email já cadastrado" : e.code === "auth/weak-password" ? "Senha: mín. 6 caracteres" : "Erro ao criar conta"); setLoading(false); }
   };
-
-  const inp = { background: dark ? "#0f0f13" : "#f5f5f0", border: `1px solid ${border}`, borderRadius: 10, padding: "11px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
-
+  const inp = { background: bg, border: `1px solid ${border}`, borderRadius: 10, padding: "11px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
   return (
     <div style={{ fontFamily: "'DM Sans', sans-serif", background: bg, minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -134,46 +110,33 @@ function LoginScreen({ dark }) {
           <div style={{ fontWeight: 600, fontSize: 24, color: text }}>Finzinho</div>
           <div style={{ fontSize: 12, color: muted, fontFamily: "'DM Mono'", marginTop: 4 }}>controle de gastos pessoal</div>
         </div>
-
         <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 20, padding: 24, display: "flex", flexDirection: "column", gap: 12 }}>
-          {modo === "opcoes" && (
-            <>
-              <button onClick={handleGoogle} disabled={loading} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", border: "1px solid #e0e0e0", borderRadius: 12, padding: "13px", fontWeight: 600, fontSize: 15, cursor: "pointer", color: "#333", boxShadow: "0 2px 6px rgba(0,0,0,0.08)" }}>
-                <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-                {loading ? "Entrando..." : "Entrar com Google"}
-              </button>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ flex: 1, height: 1, background: border }} />
-                <span style={{ fontSize: 12, color: muted }}>ou</span>
-                <div style={{ flex: 1, height: 1, background: border }} />
-              </div>
-              <button onClick={() => setModo("email-login")} style={{ padding: "12px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📧 Entrar com email</button>
-              <button onClick={() => setModo("email-cadastro")} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>✨ Criar conta</button>
-            </>
-          )}
-
-          {modo === "email-login" && (
-            <>
-              <div style={{ fontSize: 15, fontWeight: 600, color: text, marginBottom: 4 }}>Entrar com email</div>
-              <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
-              <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha" type="password" onKeyDown={e => e.key === "Enter" && handleEmailLogin()} style={inp} />
-              {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
-              <button onClick={handleEmailLogin} disabled={loading || !email || !senha} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha ? 0.5 : 1 }}>{loading ? "Entrando..." : "Entrar"}</button>
-              <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
-            </>
-          )}
-
-          {modo === "email-cadastro" && (
-            <>
-              <div style={{ fontSize: 15, fontWeight: 600, color: text, marginBottom: 4 }}>Criar conta</div>
-              <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Seu nome" style={inp} />
-              <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
-              <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha (mín. 6 caracteres)" type="password" style={inp} />
-              {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
-              <button onClick={handleEmailCadastro} disabled={loading || !email || !senha || !nome} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha || !nome ? 0.5 : 1 }}>{loading ? "Criando..." : "Criar conta"}</button>
-              <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
-            </>
-          )}
+          {modo === "opcoes" && (<>
+            <button onClick={handleGoogle} disabled={loading} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", border: "1px solid #e0e0e0", borderRadius: 12, padding: "13px", fontWeight: 600, fontSize: 15, cursor: "pointer", color: "#333" }}>
+              <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+              {loading ? "Entrando..." : "Entrar com Google"}
+            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div style={{ flex: 1, height: 1, background: border }} /><span style={{ fontSize: 12, color: muted }}>ou</span><div style={{ flex: 1, height: 1, background: border }} /></div>
+            <button onClick={() => setModo("email-login")} style={{ padding: "12px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: text, fontWeight: 600, fontSize: 14, cursor: "pointer" }}>📧 Entrar com email</button>
+            <button onClick={() => setModo("email-cadastro")} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>✨ Criar conta</button>
+          </>)}
+          {modo === "email-login" && (<>
+            <div style={{ fontSize: 15, fontWeight: 600, color: text }}>Entrar com email</div>
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
+            <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha" type="password" onKeyDown={e => e.key === "Enter" && handleEmailLogin()} style={inp} />
+            {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
+            <button onClick={handleEmailLogin} disabled={loading || !email || !senha} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha ? 0.5 : 1 }}>{loading ? "Entrando..." : "Entrar"}</button>
+            <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
+          </>)}
+          {modo === "email-cadastro" && (<>
+            <div style={{ fontSize: 15, fontWeight: 600, color: text }}>Criar conta</div>
+            <input value={nome} onChange={e => setNome(e.target.value)} placeholder="Seu nome" style={inp} />
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" type="email" style={inp} />
+            <input value={senha} onChange={e => setSenha(e.target.value)} placeholder="Senha (mín. 6 caracteres)" type="password" style={inp} />
+            {erro && <div style={{ fontSize: 12, color: "#f87171" }}>{erro}</div>}
+            <button onClick={handleEmailCadastro} disabled={loading || !email || !senha || !nome} style={{ padding: "12px", borderRadius: 12, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !email || !senha || !nome ? 0.5 : 1 }}>{loading ? "Criando..." : "Criar conta"}</button>
+            <button onClick={() => { setModo("opcoes"); setErro(""); }} style={{ padding: "10px", borderRadius: 12, border: `1px solid ${border}`, background: "none", color: muted, fontSize: 13, cursor: "pointer" }}>← Voltar</button>
+          </>)}
         </div>
         <div style={{ textAlign: "center", marginTop: 16, fontSize: 11, color: muted }}>Seus dados ficam salvos na nuvem ☁️</div>
       </div>
@@ -203,7 +166,6 @@ export default function App() {
   const [metaInput, setMetaInput] = useState("");
   const [subView, setSubView] = useState("lista");
   const [aiLoading, setAiLoading] = useState(false);
-  // Perfil
   const [editandoPerfil, setEditandoPerfil] = useState(false);
   const [novoNome, setNovoNome] = useState("");
   const [uploadingFoto, setUploadingFoto] = useState(false);
@@ -216,6 +178,7 @@ export default function App() {
   const text = dark ? "#e8e8f0" : "#1a1a24";
   const muted = dark ? "#555" : "#999";
   const subtle = dark ? "#444" : "#bbb";
+  const inp = { background: card, border: `1px solid ${border}`, borderRadius: 10, padding: "10px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
 
   useEffect(() => { const unsub = onAuthStateChanged(auth, u => { setUser(u); setChecando(false); if (u) setNovoNome(u.displayName || ""); }); return unsub; }, []);
 
@@ -224,8 +187,8 @@ export default function App() {
     carregarGastos();
     try { const s = localStorage.getItem(CONFIG_KEY + user.uid); if (s) { const c = JSON.parse(s); setConfig(c); setMetaInput(c.meta > 0 ? c.meta.toString() : ""); } } catch {}
     try { const s = localStorage.getItem(FIXOS_KEY + user.uid); if (s) setFixos(JSON.parse(s)); } catch {}
-    const interval = setInterval(() => setExemploIdx(i => (i + 1) % EXEMPLOS.length), 3000);
-    return () => clearInterval(interval);
+    const iv = setInterval(() => setExemploIdx(i => (i + 1) % EXEMPLOS.length), 3000);
+    return () => clearInterval(iv);
   }, [user]);
 
   const carregarGastos = async () => {
@@ -242,65 +205,19 @@ export default function App() {
   useEffect(() => { if (user) try { localStorage.setItem(FIXOS_KEY + user.uid, JSON.stringify(fixos)); } catch {} }, [fixos, user]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  const addGasto = async (g) => {
-    const novo = { ...g, uid: user.uid, data: new Date().toISOString() };
-    const docRef = await addDoc(collection(db, "gastos"), novo);
-    const comId = { id: docRef.id, ...novo };
-    setGastos(prev => [comId, ...prev]);
-    return comId;
-  };
-
-  const removeGastos = async (ids) => {
-    await Promise.all(ids.map(id => deleteDoc(doc(db, "gastos", id))));
-    setGastos(prev => prev.filter(g => !ids.includes(g.id)));
-    setSelecionados([]);
-  };
-
-  const salvarEdicao = async () => {
-    if (!editando) return;
-    const { id, ...dados } = editando;
-    await updateDoc(doc(db, "gastos", id), { descricao: dados.descricao, valor: parseFloat(String(dados.valor).replace(",", ".")), categoria: dados.categoria });
-    setGastos(prev => prev.map(g => g.id === id ? { ...g, ...dados } : g));
-    setEditando(null);
-  };
-
-  const salvarPerfil = async () => {
-    if (!novoNome.trim()) return;
-    await updateProfile(auth.currentUser, { displayName: novoNome });
-    setUser({ ...user, displayName: novoNome });
-    setEditandoPerfil(false);
-  };
-
-  const handleFotoUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setUploadingFoto(true);
-    try {
-      const storageRef = ref(storage, `fotos/${user.uid}`);
-      await uploadBytes(storageRef, file);
-      const url = await getDownloadURL(storageRef);
-      await updateProfile(auth.currentUser, { photoURL: url });
-      setUser({ ...user, photoURL: url });
-    } catch (e) { console.error(e); }
-    setUploadingFoto(false);
-  };
-
+  const addGasto = async (g) => { const novo = { ...g, uid: user.uid, data: new Date().toISOString() }; const docRef = await addDoc(collection(db, "gastos"), novo); const comId = { id: docRef.id, ...novo }; setGastos(prev => [comId, ...prev]); return comId; };
+  const removeGastos = async (ids) => { await Promise.all(ids.map(id => deleteDoc(doc(db, "gastos", id)))); setGastos(prev => prev.filter(g => !ids.includes(g.id))); setSelecionados([]); };
+  const salvarEdicao = async () => { if (!editando) return; const { id, ...dados } = editando; await updateDoc(doc(db, "gastos", id), { descricao: dados.descricao, valor: parseFloat(String(dados.valor).replace(",", ".")), categoria: dados.categoria }); setGastos(prev => prev.map(g => g.id === id ? { ...g, ...dados } : g)); setEditando(null); };
+  const salvarPerfil = async () => { if (!novoNome.trim()) return; await updateProfile(auth.currentUser, { displayName: novoNome }); setUser({ ...user, displayName: novoNome }); setEditandoPerfil(false); };
+  const handleFotoUpload = async (e) => { const file = e.target.files[0]; if (!file) return; setUploadingFoto(true); try { const sRef = ref(storage, `fotos/${user.uid}`); await uploadBytes(sRef, file); const url = await getDownloadURL(sRef); await updateProfile(auth.currentUser, { photoURL: url }); setUser({ ...user, photoURL: url }); } catch (e) { console.error(e); } setUploadingFoto(false); };
   const toggleSelecionado = (id) => setSelecionados(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-
-  const aplicarFixosDoMes = async () => {
-    const mes = getMesAtual();
-    const jaAplicados = gastos.filter(g => g.fixoMes === mes).map(g => g.fixoId);
-    const novos = fixos.filter(f => !jaAplicados.includes(f.id));
-    for (const f of novos) await addGasto({ ...f, fixoId: f.id, fixoMes: mes });
-    return novos.length;
-  };
+  const aplicarFixosDoMes = async () => { const mes = getMesAtual(); const ja = gastos.filter(g => g.fixoMes === mes).map(g => g.fixoId); const novos = fixos.filter(f => !ja.includes(f.id)); for (const f of novos) await addGasto({ ...f, fixoId: f.id, fixoMes: mes }); return novos.length; };
 
   const handleSend = async (overrideInput) => {
     const text = (overrideInput !== undefined ? overrideInput : input).trim();
     if (!text || aiLoading) return;
     setInput("");
     setMessages(prev => [...prev, { role: "user", text }]);
-
     if (pendente) {
       const lower = text.toLowerCase();
       if (["sim","s","yes","confirma","ok","pode","isso"].some(w => lower.includes(w))) {
@@ -311,8 +228,6 @@ export default function App() {
       } else { setMessages(prev => [...prev, { role: "bot", text: "Responde sim ou não 👆" }]); }
       return;
     }
-
-    // Tenta detectar gasto primeiro
     const resultado = parseGasto(text);
     if (resultado && text.match(/\d/)) {
       const cat = CATEGORIES[resultado.categoria];
@@ -320,32 +235,17 @@ export default function App() {
       setMessages(prev => [...prev, { role: "bot", text: `Confirma?\n\n${cat.emoji} ${resultado.descricao}\n💰 ${formatCurrency(resultado.valor)}\n📂 ${cat.label}`, confirmando: true }]);
       return;
     }
-
-    // Usa IA para outras perguntas
     setAiLoading(true);
     setMessages(prev => [...prev, { role: "bot", text: "...", loading: true }]);
     try {
       const resposta = await askGemini(text, gastos, totalMes, config);
       setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: resposta }]);
-    } catch {
-      setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: "Ops, tive um problema! Tente de novo 😅" }]);
-    }
+    } catch { setMessages(prev => [...prev.filter(m => !m.loading), { role: "bot", text: "Ops, tive um problema! Tente de novo 😅" }]); }
     setAiLoading(false);
   };
 
-  const handleFormSubmit = async () => {
-    if (!form.descricao || !form.valor) return;
-    const novo = await addGasto({ ...form, valor: parseFloat(String(form.valor).replace(",", ".")) });
-    setForm({ descricao: "", valor: "", categoria: "alimentacao" });
-    setMessages(prev => [...prev, { role: "bot", text: `✅ Adicionado!\n${CATEGORIES[novo.categoria].emoji} ${novo.descricao}\n${formatCurrency(novo.valor)}`, gasto: novo }]);
-    setView("chat");
-  };
-
-  const handleFixoAdd = () => {
-    if (!fixoForm.descricao || !fixoForm.valor) return;
-    setFixos(prev => [...prev, { ...fixoForm, valor: parseFloat(String(fixoForm.valor).replace(",", ".")), id: Date.now() }]);
-    setFixoForm({ descricao: "", valor: "", categoria: "moradia" });
-  };
+  const handleFormSubmit = async () => { if (!form.descricao || !form.valor) return; const novo = await addGasto({ ...form, valor: parseFloat(String(form.valor).replace(",", ".")) }); setForm({ descricao: "", valor: "", categoria: "alimentacao" }); setMessages(prev => [...prev, { role: "bot", text: `✅ Adicionado!\n${CATEGORIES[novo.categoria].emoji} ${novo.descricao}\n${formatCurrency(novo.valor)}`, gasto: novo }]); setView("chat"); };
+  const handleFixoAdd = () => { if (!fixoForm.descricao || !fixoForm.valor) return; setFixos(prev => [...prev, { ...fixoForm, valor: parseFloat(String(fixoForm.valor).replace(",", ".")), id: Date.now() }]); setFixoForm({ descricao: "", valor: "", categoria: "moradia" }); };
 
   const totalMes = gastos.filter(g => { const d = new Date(g.data); const h = new Date(); return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear(); }).reduce((s, g) => s + g.valor, 0);
   const totalGeral = gastos.reduce((s, g) => s + g.valor, 0);
@@ -358,8 +258,6 @@ export default function App() {
   const maiorGasto = gastos.length > 0 ? gastos.reduce((a, b) => a.valor > b.valor ? a : b) : null;
   const catMaisGasta = porCategoria.length > 0 ? porCategoria[0] : null;
 
-  const inp = { background: card, border: `1px solid ${border}`, borderRadius: 10, padding: "10px 14px", color: text, fontSize: 14, fontFamily: "'DM Sans'", outline: "none", width: "100%", boxSizing: "border-box" };
-
   if (checando) return <div style={{ background: "#0f0f13", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 40 }}>🐟</div>;
   if (!user) return <LoginScreen dark={dark} />;
 
@@ -368,7 +266,6 @@ export default function App() {
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
       <input type="file" accept="image/*" ref={fotoInputRef} style={{ display: "none" }} onChange={handleFotoUpload} />
 
-      {/* Header */}
       <div style={{ padding: "12px 16px", borderBottom: `1px solid ${border}`, display: "flex", alignItems: "center", justifyContent: "space-between", background: bg, position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 18 }}>🐟</span>
@@ -391,7 +288,7 @@ export default function App() {
           <div style={{ height: 3, background: dark ? "#1e1e2e" : "#eee", borderRadius: 2, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${pctMeta}%`, background: corMeta, borderRadius: 2, transition: "width 0.5s" }} />
           </div>
-          <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{pctMeta.toFixed(0)}% do limite · restam {formatCurrency(Math.max(config.meta - totalMes, 0))}</div>
+          <div style={{ fontSize: 10, color: muted, marginTop: 2 }}>{pctMeta.toFixed(0)}% · restam {formatCurrency(Math.max(config.meta - totalMes, 0))}</div>
         </div>
       )}
 
@@ -401,17 +298,14 @@ export default function App() {
         ))}
       </div>
 
-      {/* CHAT com IA */}
       {view === "chat" && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 120px)" }}>
           {messages.length === 0 ? (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, textAlign: "center", gap: 10 }}>
               <div style={{ fontSize: 44 }}>🐟</div>
               <div style={{ fontSize: 17, fontWeight: 600 }}>Oi, {user.displayName?.split(" ")[0] || "você"}!</div>
-              <div style={{ fontSize: 13, color: muted, lineHeight: 1.6 }}>Me diz o que gastou ou me faça<br />uma pergunta sobre seus gastos 🤖</div>
-              <div style={{ padding: "8px 16px", background: card, border: `1px solid ${border}`, borderRadius: 20, fontSize: 13, color: muted, fontFamily: "'DM Mono'" }}>
-                este mês: <span style={{ color: corMeta }}>{formatCurrency(totalMes)}</span>
-              </div>
+              <div style={{ fontSize: 13, color: muted, lineHeight: 1.6 }}>Me diz o que gastou ou faça<br />uma pergunta sobre seus gastos 🤖</div>
+              <div style={{ padding: "8px 16px", background: card, border: `1px solid ${border}`, borderRadius: 20, fontSize: 13, color: muted, fontFamily: "'DM Mono'" }}>este mês: <span style={{ color: corMeta }}>{formatCurrency(totalMes)}</span></div>
               {catMaisGasta && <div style={{ fontSize: 12, color: subtle }}>{catMaisGasta.emoji} Mais gasto em {catMaisGasta.label}</div>}
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", marginTop: 4 }}>
                 {["Como estão meus gastos?","Onde gasto mais?","Dica para economizar"].map(s => (
@@ -425,14 +319,7 @@ export default function App() {
                 <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
                   <div style={{ maxWidth: "82%", background: msg.role === "user" ? (dark ? "#1e3a5f" : "#e8f0ff") : msg.confirmando ? (dark ? "#1a2a1a" : "#f0fff4") : card, border: `1px solid ${msg.role === "user" ? (dark ? "#2a4a7f" : "#c0d0ff") : msg.confirmando ? (dark ? "#2a4a2a" : "#b0e0c0") : border}`, borderRadius: msg.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px", padding: "10px 14px", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-line", color: msg.loading ? muted : text }}>
                     {msg.loading ? "✨ Pensando..." : msg.text}
-                    {msg.gasto && (
-                      <div style={{ marginTop: 8, padding: "6px 10px", background: dark ? "#0f1f0f" : "#f0fff4", border: `1px solid ${dark ? "#1a3a1a" : "#b0e0c0"}`, borderRadius: 8, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                        <span>{CATEGORIES[msg.gasto.categoria]?.emoji}</span>
-                        <span style={{ color: "#a0e9c0", fontFamily: "'DM Mono'" }}>{formatCurrency(msg.gasto.valor)}</span>
-                        <span style={{ color: muted }}>·</span>
-                        <span style={{ color: muted }}>{msg.gasto.descricao}</span>
-                      </div>
-                    )}
+                    {msg.gasto && (<div style={{ marginTop: 8, padding: "6px 10px", background: dark ? "#0f1f0f" : "#f0fff4", border: `1px solid ${dark ? "#1a3a1a" : "#b0e0c0"}`, borderRadius: 8, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}><span>{CATEGORIES[msg.gasto.categoria]?.emoji}</span><span style={{ color: "#a0e9c0", fontFamily: "'DM Mono'" }}>{formatCurrency(msg.gasto.valor)}</span><span style={{ color: muted }}>·</span><span style={{ color: muted }}>{msg.gasto.descricao}</span></div>)}
                   </div>
                 </div>
               ))}
@@ -447,34 +334,27 @@ export default function App() {
           )}
           <div style={{ padding: "10px 16px 6px", borderTop: `1px solid ${border}`, display: "flex", gap: 8 }}>
             <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSend()} placeholder={pendente ? "sim ou não..." : aiLoading ? "Aguarde..." : "Ex: " + EXEMPLOS[exemploIdx]} disabled={aiLoading} style={{ ...inp, flex: 1, opacity: aiLoading ? 0.6 : 1 }} />
-            <button onClick={() => handleSend()} disabled={!input.trim() || aiLoading} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !input.trim() || aiLoading ? 0.4 : 1 }}>
-              {aiLoading ? "..." : "Enviar"}
-            </button>
+            <button onClick={() => handleSend()} disabled={!input.trim() || aiLoading} style={{ background: "#a0e9c0", color: "#0f1f0f", border: "none", borderRadius: 10, padding: "10px 16px", fontWeight: 600, fontSize: 14, cursor: "pointer", opacity: !input.trim() || aiLoading ? 0.4 : 1 }}>{aiLoading ? "..." : "Enviar"}</button>
           </div>
           <div style={{ padding: "4px 16px 10px", fontSize: 11, color: subtle, textAlign: "center" }}>🤖 Com IA · Digite gastos ou faça perguntas</div>
         </div>
       )}
 
-      {/* PERFIL */}
       {view === "perfil" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16, maxWidth: 480 }}>
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 16 }}>MEU PERFIL</div>
           <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 16, padding: 20, display: "flex", flexDirection: "column", alignItems: "center", gap: 16, marginBottom: 16 }}>
             <div style={{ position: "relative" }}>
-              {user.photoURL ? <img src={user.photoURL} style={{ width: 80, height: 80, borderRadius: "50%", border: `3px solid #a0e9c0` }} /> : <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#a0e9c022", border: `3px solid #a0e9c0`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>👤</div>}
-              <button onClick={() => fotoInputRef.current?.click()} disabled={uploadingFoto} style={{ position: "absolute", bottom: 0, right: 0, background: "#a0e9c0", border: "none", borderRadius: "50%", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 14 }}>
-                {uploadingFoto ? "⏳" : "📷"}
-              </button>
+              {user.photoURL ? <img src={user.photoURL} style={{ width: 80, height: 80, borderRadius: "50%", border: "3px solid #a0e9c0" }} /> : <div style={{ width: 80, height: 80, borderRadius: "50%", background: "#a0e9c022", border: "3px solid #a0e9c0", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>👤</div>}
+              <button onClick={() => fotoInputRef.current?.click()} disabled={uploadingFoto} style={{ position: "absolute", bottom: 0, right: 0, background: "#a0e9c0", border: "none", borderRadius: "50%", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 14 }}>{uploadingFoto ? "⏳" : "📷"}</button>
             </div>
-            {!editandoPerfil ? (
-              <>
-                <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 18, fontWeight: 600 }}>{user.displayName || "Sem nome"}</div>
-                  <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>{user.email}</div>
-                </div>
-                <button onClick={() => { setEditandoPerfil(true); setNovoNome(user.displayName || ""); }} style={{ padding: "8px 20px", borderRadius: 20, border: `1px solid ${border}`, background: "none", color: text, fontSize: 13, cursor: "pointer" }}>✏️ Editar nome</button>
-              </>
-            ) : (
+            {!editandoPerfil ? (<>
+              <div style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 18, fontWeight: 600 }}>{user.displayName || "Sem nome"}</div>
+                <div style={{ fontSize: 13, color: muted, marginTop: 4 }}>{user.email}</div>
+              </div>
+              <button onClick={() => { setEditandoPerfil(true); setNovoNome(user.displayName || ""); }} style={{ padding: "8px 20px", borderRadius: 20, border: `1px solid ${border}`, background: "none", color: text, fontSize: 13, cursor: "pointer" }}>✏️ Editar nome</button>
+            </>) : (
               <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 10 }}>
                 <input value={novoNome} onChange={e => setNovoNome(e.target.value)} placeholder="Seu nome" style={inp} autoFocus />
                 <div style={{ display: "flex", gap: 8 }}>
@@ -484,30 +364,21 @@ export default function App() {
               </div>
             )}
           </div>
-
           <div style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16, marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>📊 Meu resumo</div>
             <div style={{ display: "flex", gap: 10 }}>
-              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
-                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Gastos</div>
-                <div style={{ fontFamily: "'DM Mono'", fontSize: 16, color: "#a0e9c0" }}>{gastos.length}</div>
-              </div>
-              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
-                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Este mês</div>
-                <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: corMeta }}>{formatCurrency(totalMes)}</div>
-              </div>
-              <div style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
-                <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>Total</div>
-                <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: "#a0e9c0" }}>{formatCurrency(totalGeral)}</div>
-              </div>
+              {[["Gastos", gastos.length, "#a0e9c0"], ["Este mês", formatCurrency(totalMes), corMeta], ["Total", formatCurrency(totalGeral), "#a0e9c0"]].map(([l, v, c]) => (
+                <div key={l} style={{ flex: 1, padding: "10px", background: bg, borderRadius: 10, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: muted, marginBottom: 4 }}>{l}</div>
+                  <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: c }}>{v}</div>
+                </div>
+              ))}
             </div>
           </div>
-
           <button onClick={() => signOut(auth)} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "1px solid #4a1a1a", background: dark ? "#3a1a1a" : "#fff0f0", color: "#f87171", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sair da conta</button>
         </div>
       )}
 
-      {/* HISTÓRICO */}
       {view === "historico" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -515,59 +386,55 @@ export default function App() {
               <button key={k} onClick={() => setSubView(k)} style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${subView === k ? "#a0e9c0" : border}`, background: subView === k ? "#a0e9c022" : "none", color: subView === k ? "#a0e9c0" : muted, fontSize: 13, cursor: "pointer" }}>{l}</button>
             ))}
           </div>
-
-          {subView === "lista" && (
-            <>
-              <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="🔍 Buscar gasto..." style={{ ...inp, marginBottom: 10 }} />
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'" }}>{gastosBuscados.length} GASTOS</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {selecionados.length > 0 && <button onClick={() => { if (window.confirm(`Apagar ${selecionados.length}?`)) removeGastos(selecionados); }} style={{ background: dark ? "#3a1a1a" : "#fff0f0", border: "1px solid #7f2a2a", borderRadius: 8, padding: "5px 10px", color: "#f87171", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>🗑️ {selecionados.length}</button>}
-                  <button onClick={() => exportarExcel(gastos)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 10px", color: muted, fontSize: 12, cursor: "pointer" }}>📤 Excel</button>
-                </div>
+          {subView === "lista" && (<>
+            <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="🔍 Buscar gasto..." style={{ ...inp, marginBottom: 10 }} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'" }}>{gastosBuscados.length} GASTOS</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {selecionados.length > 0 && <button onClick={() => { if (window.confirm(`Apagar ${selecionados.length}?`)) removeGastos(selecionados); }} style={{ background: dark ? "#3a1a1a" : "#fff0f0", border: "1px solid #7f2a2a", borderRadius: 8, padding: "5px 10px", color: "#f87171", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>🗑️ {selecionados.length}</button>}
+                <button onClick={() => exportarExcel(gastos)} style={{ background: "none", border: `1px solid ${border}`, borderRadius: 8, padding: "5px 10px", color: muted, fontSize: 12, cursor: "pointer" }}>📤 Excel</button>
               </div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-                {[["todas","Todas","#a0e9c0"], ...Object.entries(CATEGORIES).map(([k,c]) => [k,`${c.emoji}`,c.color])].map(([key, label, color]) => (
-                  <button key={key} onClick={() => setFilterCat(key)} style={{ padding: "4px 10px", borderRadius: 20, border: `1px solid ${filterCat === key ? color : border}`, background: filterCat === key ? color+"22" : "none", color: filterCat === key ? color : muted, fontSize: 12, cursor: "pointer" }}>{label}</button>
-                ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+              {[["todas","Todas","#a0e9c0"], ...Object.entries(CATEGORIES).map(([k,c]) => [k,`${c.emoji}`,c.color])].map(([key, label, color]) => (
+                <button key={key} onClick={() => setFilterCat(key)} style={{ padding: "4px 10px", borderRadius: 20, border: `1px solid ${filterCat === key ? color : border}`, background: filterCat === key ? color+"22" : "none", color: filterCat === key ? color : muted, fontSize: 12, cursor: "pointer" }}>{label}</button>
+              ))}
+            </div>
+            {carregando ? <div style={{ textAlign: "center", padding: 40, color: muted }}>Carregando... ☁️</div> :
+              gastosBuscados.length === 0 ? <div style={{ textAlign: "center", padding: 40, color: subtle }}>Nenhum gasto 🐟</div> : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {gastosBuscados.map(g => {
+                  const cat = CATEGORIES[g.categoria] || CATEGORIES.outros;
+                  const sel = selecionados.includes(g.id);
+                  if (editando?.id === g.id) return (
+                    <div key={g.id} style={{ background: card, border: "1px solid #a0e9c0", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <input value={editando.descricao} onChange={e => setEditando(ed => ({ ...ed, descricao: e.target.value }))} style={inp} />
+                      <input value={editando.valor} onChange={e => setEditando(ed => ({ ...ed, valor: e.target.value }))} style={{ ...inp, fontFamily: "'DM Mono'" }} type="number" />
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {Object.entries(CATEGORIES).map(([key, c]) => <button key={key} onClick={() => setEditando(ed => ({ ...ed, categoria: key }))} style={{ padding: "5px 10px", borderRadius: 16, border: `1px solid ${editando.categoria === key ? c.color : border}`, background: editando.categoria === key ? c.color+"22" : "none", color: editando.categoria === key ? c.color : muted, fontSize: 12, cursor: "pointer" }}>{c.emoji}</button>)}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={salvarEdicao} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer" }}>Salvar</button>
+                        <button onClick={() => setEditando(null)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${border}`, background: "none", color: muted, cursor: "pointer" }}>Cancelar</button>
+                      </div>
+                    </div>
+                  );
+                  return (
+                    <div key={g.id} style={{ background: sel ? (dark ? "#1a2a3a" : "#e8f0ff") : card, border: `1px solid ${sel ? "#2a4a7f" : border}`, borderRadius: 12, padding: "11px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+                      <div onClick={() => toggleSelecionado(g.id)} style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${sel ? "#a0e9c0" : subtle}`, background: sel ? "#a0e9c0" : "none", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 11, cursor: "pointer", color: "#0f1f0f" }}>{sel ? "✓" : ""}</div>
+                      <div style={{ width: 30, height: 30, borderRadius: 8, background: cat.color+"22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{cat.emoji}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.descricao}</div>
+                        <div style={{ fontSize: 10, color: subtle }}>{cat.label} · {formatDate(g.data)}</div>
+                      </div>
+                      <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: cat.color, flexShrink: 0 }}>{formatCurrency(g.valor)}</div>
+                      <button onClick={() => setEditando({ ...g })} style={{ background: "none", border: "none", color: muted, cursor: "pointer", fontSize: 14 }}>✏️</button>
+                    </div>
+                  );
+                })}
               </div>
-              {carregando ? <div style={{ textAlign: "center", padding: 40, color: muted }}>Carregando... ☁️</div> :
-                gastosBuscados.length === 0 ? <div style={{ textAlign: "center", padding: 40, color: subtle }}>Nenhum gasto 🐟</div> : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {gastosBuscados.map(g => {
-                    const cat = CATEGORIES[g.categoria] || CATEGORIES.outros;
-                    const sel = selecionados.includes(g.id);
-                    if (editando?.id === g.id) return (
-                      <div key={g.id} style={{ background: card, border: `1px solid #a0e9c0`, borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                        <input value={editando.descricao} onChange={e => setEditando(ed => ({ ...ed, descricao: e.target.value }))} style={inp} />
-                        <input value={editando.valor} onChange={e => setEditando(ed => ({ ...ed, valor: e.target.value }))} style={{ ...inp, fontFamily: "'DM Mono'" }} type="number" />
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {Object.entries(CATEGORIES).map(([key, c]) => <button key={key} onClick={() => setEditando(ed => ({ ...ed, categoria: key }))} style={{ padding: "5px 10px", borderRadius: 16, border: `1px solid ${editando.categoria === key ? c.color : border}`, background: editando.categoria === key ? c.color+"22" : "none", color: editando.categoria === key ? c.color : muted, fontSize: 12, cursor: "pointer" }}>{c.emoji}</button>)}
-                        </div>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button onClick={salvarEdicao} style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer" }}>Salvar</button>
-                          <button onClick={() => setEditando(null)} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${border}`, background: "none", color: muted, cursor: "pointer" }}>Cancelar</button>
-                        </div>
-                      </div>
-                    );
-                    return (
-                      <div key={g.id} style={{ background: sel ? (dark ? "#1a2a3a" : "#e8f0ff") : card, border: `1px solid ${sel ? "#2a4a7f" : border}`, borderRadius: 12, padding: "11px 12px", display: "flex", alignItems: "center", gap: 8 }}>
-                        <div onClick={() => toggleSelecionado(g.id)} style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${sel ? "#a0e9c0" : subtle}`, background: sel ? "#a0e9c0" : "none", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 11, cursor: "pointer", color: "#0f1f0f" }}>{sel ? "✓" : ""}</div>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: cat.color+"22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{cat.emoji}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.descricao}</div>
-                          <div style={{ fontSize: 10, color: subtle }}>{cat.label} · {formatDate(g.data)}</div>
-                        </div>
-                        <div style={{ fontFamily: "'DM Mono'", fontSize: 13, color: cat.color, flexShrink: 0 }}>{formatCurrency(g.valor)}</div>
-                        <button onClick={() => setEditando({ ...g })} style={{ background: "none", border: "none", color: muted, cursor: "pointer", fontSize: 14 }}>✏️</button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
-
+            )}
+          </>)}
           {subView === "fixos" && (
             <div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
@@ -578,8 +445,8 @@ export default function App() {
                 </div>
                 <button onClick={handleFixoAdd} disabled={!fixoForm.descricao || !fixoForm.valor} style={{ padding: "10px", borderRadius: 10, border: "none", background: "#a0e9c0", color: "#0f1f0f", fontWeight: 600, cursor: "pointer", opacity: !fixoForm.descricao || !fixoForm.valor ? 0.4 : 1 }}>+ Adicionar fixo</button>
               </div>
-              {fixos.length > 0 && <>
-                <button onClick={async () => { const n = await aplicarFixosDoMes(); alert(n > 0 ? `${n} aplicado(s)!` : "Já aplicados!"); }} style={{ width: "100%", marginBottom: 10, padding: "10px", borderRadius: 10, border: `1px solid #a0e9c0`, background: "none", color: "#a0e9c0", fontWeight: 600, cursor: "pointer" }}>🔄 Aplicar fixos do mês</button>
+              {fixos.length > 0 && (<>
+                <button onClick={async () => { const n = await aplicarFixosDoMes(); alert(n > 0 ? `${n} aplicado(s)!` : "Já aplicados!"); }} style={{ width: "100%", marginBottom: 10, padding: "10px", borderRadius: 10, border: "1px solid #a0e9c0", background: "none", color: "#a0e9c0", fontWeight: 600, cursor: "pointer" }}>🔄 Aplicar fixos do mês</button>
                 {fixos.map(f => { const cat = CATEGORIES[f.categoria] || CATEGORIES.outros; return (
                   <div key={f.id} style={{ background: card, border: `1px solid ${border}`, borderRadius: 12, padding: "11px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <div style={{ width: 30, height: 30, borderRadius: 8, background: cat.color+"22", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>{cat.emoji}</div>
@@ -588,13 +455,12 @@ export default function App() {
                     <button onClick={() => setFixos(prev => prev.filter(x => x.id !== f.id))} style={{ background: "none", border: "none", color: subtle, cursor: "pointer" }}>✕</button>
                   </div>
                 );})}
-              </>}
+              </>)}
             </div>
           )}
         </div>
       )}
 
-      {/* RESUMO */}
       {view === "resumo" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
           <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
@@ -607,9 +473,7 @@ export default function App() {
               <div style={{ fontFamily: "'DM Mono'", fontSize: 17, color: "#a0e9c0", fontWeight: 500 }}>{formatCurrency(totalGeral)}</div>
             </div>
           </div>
-
           {maiorGasto && <div style={{ padding: "10px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12, fontSize: 13 }}><span style={{ color: muted }}>💸 Maior gasto: </span><span style={{ fontWeight: 500 }}>{maiorGasto.descricao}</span><span style={{ fontFamily: "'DM Mono'", color: "#f97316", marginLeft: 8 }}>{formatCurrency(maiorGasto.valor)}</span></div>}
-
           <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 12 }}>ÚLTIMOS 6 MESES</div>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 80 }}>
@@ -626,7 +490,6 @@ export default function App() {
               })}
             </div>
           </div>
-
           {config.meta > 0 && (
             <div style={{ padding: "12px 14px", background: card, border: `1px solid ${border}`, borderRadius: 12, marginBottom: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -639,7 +502,6 @@ export default function App() {
               <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>{config.meta - totalMes > 0 ? `Restam ${formatCurrency(config.meta - totalMes)}` : `Excedido em ${formatCurrency(totalMes - config.meta)}`}</div>
             </div>
           )}
-
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 10 }}>POR CATEGORIA</div>
           {porCategoria.map(cat => {
             const pct = totalGeral > 0 ? (cat.total / totalGeral) * 100 : 0;
@@ -659,7 +521,6 @@ export default function App() {
         </div>
       )}
 
-      {/* FORMULÁRIO */}
       {view === "form" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16, maxWidth: 480 }}>
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 14 }}>ADICIONAR GASTO</div>
@@ -677,7 +538,6 @@ export default function App() {
         </div>
       )}
 
-      {/* CONFIG */}
       {view === "config" && (
         <div style={{ flex: 1, overflowY: "auto", padding: 16, maxWidth: 480 }}>
           <div style={{ fontSize: 11, color: subtle, fontFamily: "'DM Mono'", marginBottom: 14 }}>CONFIGURAÇÕES</div>
